@@ -1,5 +1,5 @@
 """
-Base entity classes for the Hunter BTT201 integration.
+Base entity classes for the Hunter BTT integration.
 
 Every Home Assistant platform entity derives from HunterEntity,
 which exposes the shared DataUpdateCoordinator and zone information.
@@ -50,13 +50,13 @@ class HunterEntity(CoordinatorEntity):
     def __init__(
         self,
         coordinator,
-        description: HunterEntityDescription,
+        description: EntityDescription,
     ) -> None:
         super().__init__(coordinator)
 
         self.entity_description = description
 
-        self._zone = description.zone
+        self._zone = getattr(description, "zone", None)
 
         unique = coordinator.address.replace(":", "").lower()
 
