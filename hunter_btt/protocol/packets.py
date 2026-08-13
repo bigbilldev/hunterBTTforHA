@@ -1,5 +1,5 @@
 """
-Packet builders for the Hunter BTT201 BLE protocol.
+Packet builders for the Hunter BTT BLE protocol.
 
 Translated directly from the reverse-engineered ESP32 bridge.
 """

@@ -1,7 +1,7 @@
 """
 coordinator.py
 
-Home Assistant DataUpdateCoordinator for the Hunter BTT201 integration.
+Home Assistant DataUpdateCoordinator for the Hunter BTT integration.
 
 Architecture
 
@@ -61,7 +61,7 @@ class HunterDataUpdateCoordinator(
         self.address: str = entry.data["address"]
         self.name: str = entry.data.get(
             "name",
-            "Hunter BTT201",
+            "Hunter BTT",
         )
 
         #

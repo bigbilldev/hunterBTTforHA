@@ -1,7 +1,7 @@
 """
 transaction.py
 
-Hunter BTT201 transaction engine.
+Hunter BTT transaction engine.
 
 This module serializes every BLE write to the controller and implements the
 command sequences discovered during reverse engineering.

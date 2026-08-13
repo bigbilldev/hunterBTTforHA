@@ -1,5 +1,5 @@
 """
-Notification decoding for the Hunter BTT201 BLE protocol.
+Notification decoding for the Hunter BTT BLE protocol.
 
 This module handles notifications from:
 

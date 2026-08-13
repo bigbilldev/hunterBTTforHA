@@ -1,5 +1,5 @@
 """
-Diagnostics support for the Hunter BTT201 integration.
+Diagnostics support for the Hunter BTT integration.
 
 This module provides:
 

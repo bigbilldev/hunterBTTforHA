@@ -1,5 +1,5 @@
 """
-Schedule model and helpers for the Hunter BTT201.
+Schedule model and helpers for the Hunter BTT.
 
 This module provides a higher-level abstraction over the raw protocol
 packet builders. Home Assistant entities should manipulate these objects

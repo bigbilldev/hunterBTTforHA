@@ -1,6 +1,6 @@
 {
-  "domain": "hunter_btt201",
-  "name": "Hunter BTT201",
+  "domain": "hunter_btt",
+  "name": "Hunter BTT",
   "version": "0.1.0",
   "documentation": "https://github.com/bigbilldev/hunterBTTforHA",
   "issue_tracker": "https://github.com/bigbilldev/hunterBTTforHA/issues",
@@ -24,6 +24,6 @@
     "bleak>=0.22.3"
   ],
   "loggers": [
-    "custom_components.hunter_btt201"
+    "custom_components.hunter_btt"
   ]
 }

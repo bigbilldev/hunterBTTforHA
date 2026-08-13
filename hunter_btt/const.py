@@ -1,5 +1,5 @@
 """
-Constants for the Hunter BTT201 Home Assistant integration.
+Constants for the Hunter BTT Home Assistant integration.
 """
 
 from __future__ import annotations
@@ -7,17 +7,17 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Final
 
-DOMAIN: Final = "hunter_btt201"
+DOMAIN: Final = "hunter_btt"
 
 #
 # Integration
 #
 
-NAME: Final = "Hunter BTT201"
+NAME: Final = "Hunter BTT"
 
 MANUFACTURER: Final = "Hunter Industries"
 
-MODEL: Final = "BTT201"
+MODEL: Final = "BTT"
 
 SW_VERSION: Final = "Unknown"
 

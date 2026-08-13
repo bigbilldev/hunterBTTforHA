@@ -61,7 +61,7 @@ FIRST_CHARACTERISTICS: Final = frozenset(
 )
 
 # ---------------------------------------------------------------------------
-# Second-generation (BTT201 family / FF80)
+# Second-generation (BTT family / FF80)
 # ---------------------------------------------------------------------------
 
 SECOND_SERVICE_UUID: Final = "0000ff80-0000-1000-8000-00805f9b34fb"

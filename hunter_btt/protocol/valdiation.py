@@ -1,5 +1,5 @@
 """
-Validation helpers for the Hunter BTT201 integration.
+Validation helpers for the Hunter BTT integration.
 
 This module centralizes validation rules shared by entities,
 coordinator methods, schedules, and protocol builders.

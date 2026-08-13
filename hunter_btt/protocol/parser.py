@@ -1,5 +1,5 @@
 """
-Parser utilities for the Hunter BTT201 BLE protocol.
+Parser utilities for the Hunter BTT BLE protocol.
 
 This module converts the raw characteristic payloads into Python data
 structures used by the Home Assistant integration.

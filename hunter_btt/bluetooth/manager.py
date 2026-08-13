@@ -1,22 +1,13 @@
-"""
-bluetooth/manager.py
+"""High-level BLE manager for Hunter BTT controllers.
 
-High-level BLE manager for the Hunter BTT201.
-
-Responsibilities
-----------------
-* Own BLE client/connection/transaction engine
-* Maintain device state cache
-* Read/write all GATT characteristics
-* Decode notifications
-* Expose a simple API to the DataUpdateCoordinator
-
-No Home Assistant entity logic belongs here.
+Supports both Hunter protocol generations while preserving the existing
+HunterConnection -> HunterBLEClient -> HunterTransactionEngine architecture.
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from datetime import datetime
 from typing import Any
@@ -47,17 +38,13 @@ from ..protocol.parser import (
     parse_timer_characteristic,
     parse_zone_config,
 )
-from .client import HunterBLEClient
-from .connection import HunterConnection
-from .transaction import HunterTransactionEngine
-
-from .protocol.generation import (
+from ..protocol.generation import (
     HunterCapabilities,
     HunterGeneration,
     detect_generation,
     detect_zone_count,
 )
-from .protocol.first import (
+from ..protocol.first import (
     FirstC3,
     FirstD9,
     FirstEB,
@@ -65,49 +52,42 @@ from .protocol.first import (
     build_manual_stop,
     decode_frame,
 )
-from .protocol.uuids import (
+from ..protocol.uuids import (
     FIRST_C3_UUID,
     FIRST_D9_UUID,
     FIRST_EB_UUID,
 )
+from .client import HunterBLEClient
+from .connection import HunterConnection
+from .transaction import HunterTransactionEngine
 
 _LOGGER = logging.getLogger(__name__)
 
+COMMAND_DELAY = 0.25
+
+
+class HunterManagerError(Exception):
+    """Raised for Hunter manager errors."""
+
 
 class HunterBLEManager:
-    """Owns all BLE communication with a Hunter controller."""
+    """Own BLE communication and cached controller state."""
 
     def __init__(
         self,
         hass: HomeAssistant,
         discovery_info: BluetoothServiceInfoBleak,
     ) -> None:
-
         self._hass = hass
-
         self.address = discovery_info.address
-        self.name = discovery_info.name or "Hunter BTT201"
+        self.name = discovery_info.name or "Hunter BTT"
 
-        #
-        # BLE stack
-        #
-
-        self.client = HunterBLEClient(
-            hass,
-            discovery_info,
-        )
-
-        self.connection = HunterConnection(
-            hass,
-            self.client,
-        )
-
-        self.transaction = HunterTransactionEngine(
-            self.connection,
-        )
+        self.client = HunterBLEClient(hass, discovery_info)
+        self.connection = HunterConnection(hass, self.client)
+        self.transaction = HunterTransactionEngine(self.connection)
 
         self.connection.register_notification_callback(
-            self._notification_received,
+            self._notification_received
         )
 
         self._generation = HunterGeneration.UNKNOWN
@@ -116,417 +96,265 @@ class HunterBLEManager:
             zone_count=0,
         )
 
-        #
-        # Cached GATT values
-        #
-
         self.cache: dict[str, bytes] = {}
-
-        #
-        # Parsed state
-        #
-
         self.state: dict[str, Any] = {
             "battery": None,
             "running": False,
             "active_zone": 0,
             "remaining_seconds": 0,
-            "zones": {
-                1: {},
-                2: {},
-            },
+            "zones": {1: {}, 2: {}},
         }
 
         self.connected = False
-
         self.last_seen: datetime | None = None
-
-        self.rssi: int | None = getattr(
-            discovery_info,
-            "rssi",
-            None,
-        )
-
-        #
-        # Optional callback used by the coordinator.
-        #
-
+        self.rssi = getattr(discovery_info, "rssi", None)
         self._state_callback = None
-
-        #
-        # Prevent concurrent refreshes.
-        #
-
         self._refresh_lock = asyncio.Lock()
 
-    # ------------------------------------------------------------------
-    # Callback registration
-    # ------------------------------------------------------------------
-
-    def register_callback(
-        self,
-        callback,
-    ) -> None:
-        """
-        Register a callback invoked whenever state changes.
-
-        The callback may be synchronous or async.
-        """
+    def register_callback(self, callback) -> None:
+        """Register the coordinator state callback."""
         self._state_callback = callback
 
     async def _notify_state_changed(self) -> None:
+        """Notify the coordinator without assuming callback type."""
         if self._state_callback is None:
             return
 
         result = self._state_callback()
-
-        if asyncio.iscoroutine(result):
+        if inspect.isawaitable(result):
             await result
 
-    # ------------------------------------------------------------------
-    # Connection
-    # ------------------------------------------------------------------
+    @property
+    def generation(self) -> HunterGeneration:
+        return self._generation
+
+    @property
+    def capabilities(self) -> HunterCapabilities:
+        return self._capabilities
+
+    @property
+    def battery(self) -> int | None:
+        return self.state.get("battery")
+
+    @property
+    def running(self) -> bool:
+        return bool(self.state.get("running", False))
+
+    @property
+    def active_zone(self) -> int:
+        return int(self.state.get("active_zone", 0))
+
+    @property
+    def remaining_seconds(self) -> int:
+        return int(self.state.get("remaining_seconds", 0))
+
+    def zone(self, zone: int) -> dict[str, Any]:
+        return self.state["zones"].setdefault(zone, {})
+
+    @property
+    def available(self) -> bool:
+        return self.connected
 
     async def connect(self) -> None:
-
+        """Connect and identify the protocol generation."""
         if self.connected:
             return
 
-        await self.connection.connect()
+        try:
+            await self.connection.connect()
 
-        self.connected = True
+            services = self.connection.service_uuids
+            characteristics = self.connection.characteristic_uuids
 
-        _LOGGER.info(
-            "Connected to Hunter controller %s",
-            self.address,
-        )
+            self._generation = detect_generation(services)
 
-        self._generation = detect_generation(
-            self._connection.service_uuids
-        )
+            if self._generation is HunterGeneration.UNKNOWN:
+                await self.connection.disconnect()
+                raise HunterManagerError(
+                    "Unable to identify Hunter BLE protocol generation."
+                )
 
-        if self._generation is HunterGeneration.UNKNOWN:
-            raise HunterManagerError(
-                "Unable to identify Hunter BLE protocol generation."
+            self._capabilities = HunterCapabilities(
+                generation=self._generation,
+                zone_count=detect_zone_count(
+                    characteristics,
+                    self._generation,
+                ),
+                service_uuid=(
+                    "0000fcc0-0000-1000-8000-00805f9b34fb"
+                    if self._generation is HunterGeneration.FIRST
+                    else "0000ff80-0000-1000-8000-00805f9b34fb"
+                ),
             )
 
-        self._capabilities = HunterCapabilities(
-            generation=self._generation,
-            zone_count=detect_zone_count(
-                self._connection.characteristic_uuids,
-                self._generation,
-            ),
-            service_uuid=(
-                "0000fcc0-0000-1000-8000-00805f9b34fb"
-                if self._generation is HunterGeneration.FIRST
-                else "0000ff80-0000-1000-8000-00805f9b34fb"
-            ),
-        )
+            self.connected = True
 
-        _LOGGER.info(
-            "Hunter protocol generation=%s zones=%d",
-            self._generation.value,
-            self._capabilities.zone_count,
-        )
+            _LOGGER.info(
+                "Connected to Hunter %s: generation=%s zones=%d",
+                self.address,
+                self._generation.value,
+                self._capabilities.zone_count,
+            )
 
+            if self._generation is HunterGeneration.SECOND:
+                await self.client.subscribe(
+                    self._notification_received,
+                )
 
+            self.last_seen = datetime.utcnow()
+            await self._notify_state_changed()
+
+        except HunterManagerError:
+            self.connected = False
+            raise
+        except Exception as err:
+            self.connected = False
+            try:
+                await self.connection.disconnect()
+            except Exception:
+                pass
+            raise HunterManagerError(
+                f"Unable to connect to Hunter controller: {err}"
+            ) from err
 
     async def disconnect(self) -> None:
-
-        if not self.connected:
+        """Disconnect and clear the connection state."""
+        if not self.connected and not self.connection.connected:
             return
 
-        await self.connection.disconnect()
-
-        self.connected = False
+        try:
+            if self._generation is HunterGeneration.SECOND:
+                try:
+                    await self.client.unsubscribe()
+                except Exception:
+                    _LOGGER.debug(
+                        "Unable to unsubscribe Hunter notifications",
+                        exc_info=True,
+                    )
+        finally:
+            await self.connection.disconnect()
+            self.connected = False
+            await self._notify_state_changed()
 
     async def ensure_connected(self) -> None:
-        if not self.connected:
+        if not self.connected or not self.connection.connected:
             await self.connect()
-
-    # ------------------------------------------------------------------
-    # Notification handling
-    # ------------------------------------------------------------------
 
     async def _notification_received(
         self,
         uuid: str,
         payload: bytes,
     ) -> None:
-        """
-        Invoked by HunterConnection whenever a notification arrives.
-        """
-
+        """Handle Second-generation notifications."""
         self.cache[uuid] = payload
-
         self.last_seen = datetime.utcnow()
 
-        #
-        # Transaction engine receives acknowledgements first.
-        #
+        await self.transaction.notification(uuid, payload)
 
-        await self.transaction.notification(
-            uuid,
-            payload,
-        )
+        decoded = decode_notification(uuid, payload)
 
-        decoded = decode_notification(
-            uuid,
-            payload,
-        )
-
-        if isinstance(
-            decoded,
-            RuntimeNotification,
-        ):
-            self._handle_runtime(decoded)
-
-        elif isinstance(
-            decoded,
-            StatusNotification,
-        ):
-            self._handle_status(decoded)
-
-        elif isinstance(
-            decoded,
-            CommandNotification,
-        ):
-            _LOGGER.debug(
-                "Command ACK: %s",
-                decoded.notification,
+        if isinstance(decoded, RuntimeNotification):
+            self.state["running"] = decoded.running
+            self.state["active_zone"] = decoded.zone
+            self.state["remaining_seconds"] = (
+                decoded.remaining_seconds
             )
+        elif isinstance(decoded, StatusNotification):
+            self.state["running"] = decoded.running
+            self.state["active_zone"] = decoded.zone
+            if decoded.battery_percent is not None:
+                self.state["battery"] = decoded.battery_percent
+        elif isinstance(decoded, CommandNotification):
+            _LOGGER.debug("Command ACK: %s", decoded.notification)
 
         await self._notify_state_changed()
 
-    # ------------------------------------------------------------------
-    # Notification decoders
-    # ------------------------------------------------------------------
-
-    def _handle_runtime(
-        self,
-        runtime: RuntimeNotification,
-    ) -> None:
-
-        self.state["running"] = runtime.running
-        self.state["active_zone"] = runtime.zone
-        self.state["remaining_seconds"] = (
-            runtime.remaining_seconds
-        )
-
-    def _handle_status(
-        self,
-        status: StatusNotification,
-    ) -> None:
-
-        self.state["running"] = status.running
-        self.state["active_zone"] = status.zone
-
-        if status.battery_percent is not None:
-            self.state["battery"] = (
-                status.battery_percent
-            )
-
-    # ------------------------------------------------------------------
-    # Characteristic cache
-    # ------------------------------------------------------------------
-
-    async def _read(
-        self,
-        uuid: str,
-    ) -> bytes:
-
+    async def _read(self, uuid: str) -> bytes:
+        await self.ensure_connected()
         value = await self.transaction.read(uuid)
-
         self.cache[uuid] = value
-
         return value
 
-    async def _write(
-        self,
-        uuid: str,
-        payload: bytes,
-    ) -> None:
-
+    async def _write(self, uuid: str, payload: bytes) -> None:
+        await self.ensure_connected()
+        await self.transaction.write_characteristic(uuid, payload)
         self.cache[uuid] = payload
 
-        await self.transaction.write_characteristic(
-            uuid,
-            payload,
-        )
-    # ------------------------------------------------------------------
-    # Refresh
-    # ------------------------------------------------------------------
-
     async def refresh(self) -> dict[str, Any]:
-        """
-        Read all controller characteristics and rebuild the cached state.
-
-        Returns the parsed state dictionary used by the
-        DataUpdateCoordinator.
-        """
-
+        """Refresh only characteristics appropriate to this generation."""
         async with self._refresh_lock:
-
             await self.ensure_connected()
 
-            #
-            # Battery
-            #
-
             try:
-                payload = await self._read(
-                    BATTERY_LEVEL_UUID,
-                )
-
-                self.state["battery"] = parse_battery(
-                    payload,
-                )
-
-            except Exception:
-                _LOGGER.exception(
-                    "Failed reading battery level"
-                )
-
-            #
-            # Zones
-            #
-
-            for zone in (1, 2):
-                await self._refresh_zone(zone)
-
-            #
-            # Countdown
-            #
-
-            try:
-
-                payload = await self._read(
-                    COUNTDOWN_UUID,
-                )
-
-                countdown = parse_countdown(
-                    payload,
-                )
-
-                self.state["running"] = (
-                    countdown.active
-                )
-
-                self.state["active_zone"] = (
-                    countdown.zone
-                )
-
-                self.state[
-                    "remaining_seconds"
-                ] = countdown.remaining_seconds
-
+                self.state["battery"] = await self.refresh_battery()
             except Exception:
                 _LOGGER.debug(
-                    "Countdown characteristic unavailable"
+                    "Failed reading battery level",
+                    exc_info=True,
+                )
+
+            if self._generation is HunterGeneration.FIRST:
+                self.last_seen = datetime.utcnow()
+                await self._notify_state_changed()
+                return self.state
+
+            for zone in range(
+                1,
+                self._capabilities.zone_count + 1,
+            ):
+                await self._refresh_zone(zone)
+
+            try:
+                payload = await self._read(COUNTDOWN_UUID)
+                countdown = parse_countdown(payload)
+                self.state["running"] = countdown.active
+                self.state["active_zone"] = countdown.zone
+                self.state["remaining_seconds"] = (
+                    countdown.remaining_seconds
+                )
+            except Exception:
+                _LOGGER.debug(
+                    "Countdown characteristic unavailable",
+                    exc_info=True,
                 )
 
             self.last_seen = datetime.utcnow()
-
             await self._notify_state_changed()
-
             return self.state
 
-    # ------------------------------------------------------------------
-    # Zone refresh
-    # ------------------------------------------------------------------
-
-    async def _refresh_zone(
-        self,
-        zone: int,
-    ) -> None:
-
-        if self._generation is HunterGeneration.FIRST:
-            await self.refresh_battery()
-
-            try:
-                self._state.rssi = await self._connection.read_rssi()
-            except Exception:
-                pass
-
-            self._notify_state_changed()
-            return self._state
-
-        zone_state: dict[str, Any] = (
-            self.state["zones"].setdefault(
-                zone,
-                {},
-            )
-        )
-
-        #
-        # Configuration
-        #
+    async def _refresh_zone(self, zone: int) -> None:
+        """Refresh one Second-generation zone."""
+        zone_state = self.zone(zone)
 
         try:
-
-            payload = await self._read(
-                ZONE_CONFIG_UUID[zone],
-            )
-
-            zone_state["config"] = (
-                parse_zone_config(
-                    payload,
-                )
-            )
-
+            payload = await self._read(ZONE_CONFIG_UUID[zone])
+            zone_state["config"] = parse_zone_config(payload)
         except Exception:
-
-            _LOGGER.exception(
+            _LOGGER.debug(
                 "Unable to read zone %s config",
                 zone,
+                exc_info=True,
             )
-
-        #
-        # Timer schedule
-        #
 
         try:
-
-            payload = await self._read(
-                ZONE_TIMER_UUID[zone],
-            )
-
-            timer = (
-                parse_timer_characteristic(
-                    payload,
-                )
-            )
-
+            payload = await self._read(ZONE_TIMER_UUID[zone])
+            timer = parse_timer_characteristic(payload)
             zone_state["timer"] = {
                 "enabled": timer.enabled,
                 "days_mask": timer.days_mask,
                 "start_times": timer.start_times,
                 "runtime": timer.runtime,
             }
-
         except Exception:
-
-            _LOGGER.exception(
+            _LOGGER.debug(
                 "Unable to read timer for zone %s",
                 zone,
+                exc_info=True,
             )
-
-        #
-        # Cycling schedule
-        #
 
         try:
-
-            payload = await self._read(
-                ZONE_CYCLING_UUID[zone],
-            )
-
-            cycling = (
-                parse_cycling_characteristic(
-                    payload,
-                )
-            )
-
+            payload = await self._read(ZONE_CYCLING_UUID[zone])
+            cycling = parse_cycling_characteristic(payload)
             zone_state["cycling"] = {
                 "enabled": cycling.enabled,
                 "days_mask": cycling.days_mask,
@@ -537,175 +365,76 @@ class HunterBLEManager:
                 "runtime": cycling.runtime,
                 "soak": cycling.soak,
             }
-
         except Exception:
-
-            _LOGGER.exception(
-                "Unable to read cycling schedule "
-                "for zone %s",
+            _LOGGER.debug(
+                "Unable to read cycling schedule for zone %s",
                 zone,
+                exc_info=True,
             )
-
-        #
-        # Diagnostics
-        #
 
         try:
-
-            payload = await self._read(
-                ZONE_DIAGNOSTIC_UUID[zone],
-            )
-
-            zone_state["diagnostics"] = (
-                parse_diagnostics(
-                    payload,
-                )
-            )
-
+            payload = await self._read(ZONE_DIAGNOSTIC_UUID[zone])
+            zone_state["diagnostics"] = parse_diagnostics(payload)
         except Exception:
-
             _LOGGER.debug(
-                "Diagnostics unavailable "
-                "for zone %s",
+                "Diagnostics unavailable for zone %s",
                 zone,
+                exc_info=True,
             )
-
-        #
-        # Convenience values exposed to entities
-        #
 
         timer = zone_state.get("timer", {})
         cycling = zone_state.get("cycling", {})
-
-        zone_state["runtime"] = timer.get(
-            "runtime",
-            0,
-        )
-
-        zone_state["timer_enabled"] = timer.get(
+        zone_state["runtime"] = timer.get("runtime", 0)
+        zone_state["timer_enabled"] = timer.get("enabled", False)
+        zone_state["cycling_enabled"] = cycling.get(
             "enabled",
             False,
         )
 
-        zone_state["cycling_enabled"] = (
-            cycling.get(
-                "enabled",
-                False,
+    async def refresh_zone(self, zone: int) -> dict[str, Any]:
+        await self.ensure_connected()
+
+        if self._generation is HunterGeneration.FIRST:
+            if zone != 1:
+                raise HunterManagerError(
+                    "First-generation Zone 2 support is not proven."
+                )
+            return self.zone(zone)
+
+        await self._refresh_zone(zone)
+        await self._notify_state_changed()
+        return self.zone(zone)
+
+    async def refresh_battery(self) -> int | None:
+        payload = await self._read(BATTERY_LEVEL_UUID)
+        battery = parse_battery(payload)
+        self.state["battery"] = battery
+        return battery
+
+    async def start_zone(self, zone: int, runtime: int) -> None:
+        """Start manual watering."""
+        await self.ensure_connected()
+
+        if runtime <= 0:
+            raise HunterManagerError(
+                "Runtime must be greater than zero."
             )
-        )
 
-    # ------------------------------------------------------------------
-    # Cache helpers
-    # ------------------------------------------------------------------
+        if zone < 1 or zone > self._capabilities.zone_count:
+            raise HunterManagerError(
+                f"Zone {zone} is not supported."
+            )
 
-    def get_cached(
-        self,
-        uuid: str,
-    ) -> bytes | None:
-        """Return the last cached value for a characteristic."""
-
-        return self.cache.get(uuid)
-
-    def clear_cache(self) -> None:
-        """Clear the raw characteristic cache."""
-
-        self.cache.clear()
-
-    # ------------------------------------------------------------------
-    # State access
-    # ------------------------------------------------------------------
-
-    @property
-    def generation(self) -> HunterGeneration:
-        return self._generation
-
-    @property
-    def capabilities(self) -> HunterCapabilities:
-        return self._capabilities    
-    
-    @property
-    def battery(self) -> int | None:
-        return self.state.get("battery")
-
-    @property
-    def running(self) -> bool:
-        return self.state.get(
-            "running",
-            False,
-        )
-
-    @property
-    def active_zone(self) -> int:
-        return self.state.get(
-            "active_zone",
-            0,
-        )
-
-    @property
-    def remaining_seconds(self) -> int:
-        return self.state.get(
-            "remaining_seconds",
-            0,
-        )
-
-    def zone(self, zone: int) -> dict[str, Any]:
-        """
-        Return the parsed state for a zone.
-        """
-
-        return self.state["zones"].setdefault(
-            zone,
-            {},
-        )
-
-    # ------------------------------------------------------------------
-    # Availability
-    # ------------------------------------------------------------------
-
-    @property
-    def available(self) -> bool:
-        """
-        Device is available when connected.
-
-        Coordinator will also track update success.
-        """
-
-        return self.connected  
-     # ------------------------------------------------------------------
-    # Manual watering
-    # ------------------------------------------------------------------
-
-    async def start_zone(
-        self,
-        zone: int,
-        runtime: int,
-    ) -> None:
-        """
-        Start manual watering.
-        """
         if self._generation is HunterGeneration.FIRST:
             await self._start_zone_first(zone, runtime)
             return
 
-
-        _LOGGER.info(
-            "Starting zone %s (%s seconds)",
-            zone,
-            runtime,
-        )
-
-        await self.transaction.start_zone(
-            zone,
-            runtime,
-        )
+        await self.transaction.start_zone(zone, runtime)
 
         self.state["running"] = True
         self.state["active_zone"] = zone
         self.state["remaining_seconds"] = runtime
-
-        zone_state = self.zone(zone)
-        zone_state["runtime"] = runtime
-
+        self.zone(zone)["runtime"] = runtime
         await self._notify_state_changed()
 
     async def _start_zone_first(
@@ -713,21 +442,32 @@ class HunterBLEManager:
         zone: int,
         runtime: int,
     ) -> None:
+        """Start the proven First-generation single-zone controller path."""
         if zone != 1:
             raise HunterManagerError(
-                "First-generation Zone 2 support is not yet proven."
+                "First-generation Zone 2 support is not proven."
             )
 
-        c3_frame = await self._connection.read(FIRST_C3_UUID)
+        # The current First-generation implementation uses the C3 mode
+        # selection to choose the D9 or EB command characteristic.
+        c3_payload = await self._read(FIRST_C3_UUID)
 
-        c3 = FirstC3.from_payload(
-            decode_frame(c3_frame).payload
-        )
+        try:
+            c3 = FirstC3.from_payload(
+                decode_frame(c3_payload).payload
+            )
+        except Exception as err:
+            raise HunterManagerError(
+                "Unable to decode First-generation C3 state."
+            ) from err
 
-        write = build_manual_start(
-            c3.select_mode,
-            runtime,
-        )
+        try:
+            write = build_manual_start(
+                c3.select_mode,
+                runtime,
+            )
+        except ValueError as err:
+            raise HunterManagerError(str(err)) from err
 
         _LOGGER.info(
             "First-generation start: mode=%d runtime=%d "
@@ -738,7 +478,7 @@ class HunterBLEManager:
             write.payload.hex(" "),
         )
 
-        await self._connection.write(
+        await self.connection.write(
             write.uuid,
             write.payload,
             response=True,
@@ -746,37 +486,40 @@ class HunterBLEManager:
 
         await asyncio.sleep(COMMAND_DELAY)
 
-        self._state.active_zone = zone
-        self._state.controller_running = True
-        zone_state = self._state.zone(zone)
-        zone_state.running = True
-        zone_state.remaining_seconds = runtime
-        self._notify_listeners()
+        self.state["running"] = True
+        self.state["active_zone"] = zone
+        self.state["remaining_seconds"] = runtime
+        self.zone(zone)["runtime"] = runtime
+
+        await self._notify_state_changed()
 
     async def stop(self) -> None:
-        """
-        Stop manual watering.
-        """
+        """Stop manual watering."""
+        await self.ensure_connected()
+
         if self._generation is HunterGeneration.FIRST:
             await self._stop_first()
             return
-
-        _LOGGER.info("Stopping irrigation")
 
         await self.transaction.stop()
 
         self.state["running"] = False
         self.state["active_zone"] = 0
         self.state["remaining_seconds"] = 0
-
         await self._notify_state_changed()
 
     async def _stop_first(self) -> None:
-        c3_frame = await self._connection.read(FIRST_C3_UUID)
+        """Stop the proven First-generation single-zone controller path."""
+        c3_payload = await self._read(FIRST_C3_UUID)
 
-        c3 = FirstC3.from_payload(
-            decode_frame(c3_frame).payload
-        )
+        try:
+            c3 = FirstC3.from_payload(
+                decode_frame(c3_payload).payload
+            )
+        except Exception as err:
+            raise HunterManagerError(
+                "Unable to decode First-generation C3 state."
+            ) from err
 
         if c3.select_mode == 0:
             uuid = FIRST_D9_UUID
@@ -790,16 +533,18 @@ class HunterBLEManager:
                 f"{c3.select_mode}"
             )
 
-        current_frame = await self._connection.read(uuid)
+        current_payload = await self._read(uuid)
 
-        current = protocol_type.from_payload(
-            decode_frame(current_frame).payload
-        )
-
-        write = build_manual_stop(
-            c3.select_mode,
-            current.minute,
-        )
+        try:
+            current = protocol_type.from_payload(
+                decode_frame(current_payload).payload
+            )
+            write = build_manual_stop(
+                c3.select_mode,
+                current.minute,
+            )
+        except ValueError as err:
+            raise HunterManagerError(str(err)) from err
 
         _LOGGER.info(
             "First-generation stop: mode=%d uuid=%s payload=%s",
@@ -808,7 +553,7 @@ class HunterBLEManager:
             write.payload.hex(" "),
         )
 
-        await self._connection.write(
+        await self.connection.write(
             write.uuid,
             write.payload,
             response=True,
@@ -816,222 +561,115 @@ class HunterBLEManager:
 
         await asyncio.sleep(COMMAND_DELAY)
 
-        self._state.reset_runtime()
-        self._notify_listeners()
-
-
-    # ------------------------------------------------------------------
-    # Runtime
-    # ------------------------------------------------------------------
+        self.state["running"] = False
+        self.state["active_zone"] = 0
+        self.state["remaining_seconds"] = 0
+        await self._notify_state_changed()
 
     async def set_manual_runtime(
         self,
         zone: int,
         runtime: int,
     ) -> None:
-        """
-        Update the cached manual runtime.
-
-        The runtime packet is written when a manual watering
-        transaction is started.
-        """
-
         self.zone(zone)["runtime"] = runtime
-
         await self._notify_state_changed()
 
-    # ------------------------------------------------------------------
-    # Timer configuration
-    # ------------------------------------------------------------------
+    async def write_timer(self, zone: int, schedule) -> None:
+        if self._generation is HunterGeneration.FIRST:
+            raise HunterManagerError(
+                "Schedule writes are not yet supported for First-generation devices."
+            )
 
-    async def write_timer(
-        self,
-        zone: int,
-        schedule,
-    ) -> None:
-        """
-        Write a complete timer schedule.
-
-        'schedule' is expected to be a TimerSchedule model from
-        protocol.schedules.
-        """
-
-        from ..protocol.packets import (
-            build_timer_block,
-            mutate_timer_config,
-        )
+        from ..protocol.packets import build_timer_block, mutate_timer_config
 
         timer_payload = build_timer_block(schedule)
-
-        current = self.cache.get(
-            ZONE_CONFIG_UUID[zone],
-        )
-
+        current = self.cache.get(ZONE_CONFIG_UUID[zone])
         if current is None:
-            current = await self._read(
-                ZONE_CONFIG_UUID[zone],
-            )
+            current = await self._read(ZONE_CONFIG_UUID[zone])
 
         config_payload = mutate_timer_config(
             current,
             schedule.enabled,
             schedule.day_mask,
         )
-
-        await self._write(
-            ZONE_TIMER_UUID[zone],
-            timer_payload,
-        )
-
-        await self._write(
-            ZONE_CONFIG_UUID[zone],
-            config_payload,
-        )
-
+        await self._write(ZONE_TIMER_UUID[zone], timer_payload)
+        await self._write(ZONE_CONFIG_UUID[zone], config_payload)
         await self.refresh()
 
-    async def enable_timer(
-        self,
-        zone: int,
-        enabled: bool,
-    ) -> None:
+    async def enable_timer(self, zone: int, enabled: bool) -> None:
+        if self._generation is HunterGeneration.FIRST:
+            raise HunterManagerError(
+                "Timer writes are not yet supported for First-generation devices."
+            )
 
         zone_state = self.zone(zone)
-
-        timer = zone_state.setdefault(
-            "timer",
-            {},
-        )
-
+        timer = zone_state.setdefault("timer", {})
         timer["enabled"] = enabled
 
-        from ..protocol.packets import (
-            mutate_timer_config,
-        )
+        from ..protocol.packets import mutate_timer_config
 
-        current = self.cache.get(
-            ZONE_CONFIG_UUID[zone],
-        )
-
+        current = self.cache.get(ZONE_CONFIG_UUID[zone])
         if current is None:
-            current = await self._read(
-                ZONE_CONFIG_UUID[zone],
-            )
+            current = await self._read(ZONE_CONFIG_UUID[zone])
 
         payload = mutate_timer_config(
             current,
             enabled,
-            timer.get(
-                "days_mask",
-                0,
-            ),
+            timer.get("days_mask", 0),
         )
-
-        await self._write(
-            ZONE_CONFIG_UUID[zone],
-            payload,
-        )
-
+        await self._write(ZONE_CONFIG_UUID[zone], payload)
         await self.refresh()
 
-    # ------------------------------------------------------------------
-    # Cycling configuration
-    # ------------------------------------------------------------------
-
-    async def write_cycling(
-        self,
-        zone: int,
-        schedule,
-    ) -> None:
+    async def write_cycling(self, zone: int, schedule) -> None:
+        if self._generation is HunterGeneration.FIRST:
+            raise HunterManagerError(
+                "Schedule writes are not yet supported for First-generation devices."
+            )
 
         from ..protocol.packets import (
             build_cycling_block,
             mutate_cycling_config,
         )
 
-        cycling_payload = build_cycling_block(
-            schedule,
-        )
-
-        current = self.cache.get(
-            ZONE_CONFIG_UUID[zone],
-        )
-
+        cycling_payload = build_cycling_block(schedule)
+        current = self.cache.get(ZONE_CONFIG_UUID[zone])
         if current is None:
-            current = await self._read(
-                ZONE_CONFIG_UUID[zone],
-            )
+            current = await self._read(ZONE_CONFIG_UUID[zone])
 
         config_payload = mutate_cycling_config(
             current,
             schedule.enabled,
             schedule.day_mask,
         )
-
-        await self._write(
-            ZONE_CYCLING_UUID[zone],
-            cycling_payload,
-        )
-
-        await self._write(
-            ZONE_CONFIG_UUID[zone],
-            config_payload,
-        )
-
+        await self._write(ZONE_CYCLING_UUID[zone], cycling_payload)
+        await self._write(ZONE_CONFIG_UUID[zone], config_payload)
         await self.refresh()
 
-    async def enable_cycling(
-        self,
-        zone: int,
-        enabled: bool,
-    ) -> None:
+    async def enable_cycling(self, zone: int, enabled: bool) -> None:
+        if self._generation is HunterGeneration.FIRST:
+            raise HunterManagerError(
+                "Cycling writes are not yet supported for First-generation devices."
+            )
 
         zone_state = self.zone(zone)
-
-        cycling = zone_state.setdefault(
-            "cycling",
-            {},
-        )
-
+        cycling = zone_state.setdefault("cycling", {})
         cycling["enabled"] = enabled
 
-        from ..protocol.packets import (
-            mutate_cycling_config,
-        )
+        from ..protocol.packets import mutate_cycling_config
 
-        current = self.cache.get(
-            ZONE_CONFIG_UUID[zone],
-        )
-
+        current = self.cache.get(ZONE_CONFIG_UUID[zone])
         if current is None:
-            current = await self._read(
-                ZONE_CONFIG_UUID[zone],
-            )
+            current = await self._read(ZONE_CONFIG_UUID[zone])
 
         payload = mutate_cycling_config(
             current,
             enabled,
-            cycling.get(
-                "days_mask",
-                0,
-            ),
+            cycling.get("days_mask", 0),
         )
-
-        await self._write(
-            ZONE_CONFIG_UUID[zone],
-            payload,
-        )
-
+        await self._write(ZONE_CONFIG_UUID[zone], payload)
         await self.refresh()
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    async def read_characteristic(
-        self,
-        uuid: str,
-    ) -> bytes:
+    async def read_characteristic(self, uuid: str) -> bytes:
         return await self._read(uuid)
 
     async def write_characteristic(
@@ -1039,39 +677,13 @@ class HunterBLEManager:
         uuid: str,
         payload: bytes,
     ) -> None:
-        await self._write(
-            uuid,
-            payload,
-        )
+        await self._write(uuid, payload)
 
-    # ------------------------------------------------------------------
-    # Refresh helpers
-    # ------------------------------------------------------------------
+    def get_cached(self, uuid: str) -> bytes | None:
+        return self.cache.get(uuid)
 
-    async def refresh_zone(
-        self,
-        zone: int,
-    ) -> dict[str, Any]:
-
-        await self._refresh_zone(zone)
-
-        return self.zone(zone)
-
-    async def refresh_battery(self) -> int | None:
-
-        payload = await self._read(
-            BATTERY_LEVEL_UUID,
-        )
-
-        battery = parse_battery(payload)
-
-        self.state["battery"] = battery
-
-        return battery
-
-    # ------------------------------------------------------------------
-    # Diagnostics
-    # ------------------------------------------------------------------
+    def clear_cache(self) -> None:
+        self.cache.clear()
 
     @property
     def diagnostics(self) -> dict[str, Any]:
@@ -1079,24 +691,13 @@ class HunterBLEManager:
             "address": self.address,
             "name": self.name,
             "connected": self.connected,
+            "generation": self._generation.value,
+            "zone_count": self._capabilities.zone_count,
             "last_seen": self.last_seen,
             "cache_entries": len(self.cache),
             "state": self.state,
         }
 
-    # ------------------------------------------------------------------
-    # Shutdown
-    # ------------------------------------------------------------------
-
     async def shutdown(self) -> None:
-        """
-        Disconnect from the controller and release BLE resources.
-        """
-
-        _LOGGER.info(
-            "Shutting down Hunter BLE manager"
-        )
-
         self.clear_cache()
-
-        await self.disconnect()    
+        await self.disconnect()
