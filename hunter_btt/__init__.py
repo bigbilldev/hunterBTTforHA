@@ -1,7 +1,7 @@
 """
-Hunter BTT201 Home Assistant Integration.
+Hunter BTT Home Assistant Integration.
 
-This integration communicates directly with the Hunter BTT201 irrigation
+This integration communicates directly with the Hunter BTT irrigation
 controller over Bluetooth Low Energy (BLE).
 
 Architecture
@@ -18,7 +18,7 @@ HunterConnection
         │
 HunterBLEClient
         │
-Hunter BTT201
+Hunter BTT
 """
 
 from __future__ import annotations
@@ -71,6 +71,8 @@ async def async_setup_entry(
 
     await coordinator.async_config_entry_first_refresh()
 
+    entry.runtime_data = coordinator
+
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
@@ -86,7 +88,7 @@ async def async_setup_entry(
     )
 
     _LOGGER.info(
-        "Hunter BTT201 integration initialized (%s)",
+        "Hunter BTT integration initialized (%s)",
         coordinator.address,
     )
 
