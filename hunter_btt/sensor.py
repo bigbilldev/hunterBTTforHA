@@ -11,7 +11,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import PERCENTAGE
 
-from ..entity import HunterEntity
+from .entity import HunterEntity
 
 
 @dataclass(frozen=True, kw_only=True)

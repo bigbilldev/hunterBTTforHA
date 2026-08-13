@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from homeassistant.components.switch import SwitchEntity
 
-from ..entity import HunterEntity
+from .entity import HunterEntity
 
 
 async def async_setup_entry(hass, entry, async_add_entities):

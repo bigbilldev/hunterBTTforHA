@@ -9,7 +9,7 @@ from homeassistant.components.button import (
     ButtonEntityDescription,
 )
 
-from ..entity import HunterEntity
+from .entity import HunterEntity
 
 
 @dataclass(frozen=True, kw_only=True)

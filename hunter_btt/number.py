@@ -6,7 +6,7 @@ from homeassistant.components.number import (
     NumberEntity,
 )
 
-from ..entity import HunterEntity
+from .entity import HunterEntity
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
