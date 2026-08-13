@@ -4,12 +4,20 @@ from __future__ import annotations
 
 from homeassistant.components.number import (
     NumberEntity,
+    NumberEntityDescription,
 )
 
 from .entity import HunterEntity
 
 
+RUNTIME_DESCRIPTION = NumberEntityDescription(
+    key="manual_runtime",
+)
+
+
 async def async_setup_entry(hass, entry, async_add_entities):
+    """Set up Hunter BTT number entities."""
+
     async_add_entities(
         [HunterRuntimeNumber(entry.runtime_data)]
     )
@@ -24,11 +32,7 @@ class HunterRuntimeNumber(HunterEntity, NumberEntity):
     _attr_native_unit_of_measurement = "s"
 
     def __init__(self, coordinator):
-        self.entity_description = type(
-            "Description",
-            (),
-            {"key": "manual_runtime"},
-        )
+        self.entity_description = RUNTIME_DESCRIPTION
         super().__init__(
             coordinator,
             self.entity_description,

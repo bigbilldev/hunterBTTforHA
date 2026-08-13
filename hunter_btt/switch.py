@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
-from homeassistant.components.switch import SwitchEntity
+from homeassistant.components.switch import (
+    SwitchEntity,
+    SwitchEntityDescription,
+)
 
 from .entity import HunterEntity
 
 
+TIMER_ENABLED_DESCRIPTION = SwitchEntityDescription(
+    key="timer_enabled",
+)
+
+CYCLING_ENABLED_DESCRIPTION = SwitchEntityDescription(
+    key="cycling_enabled",
+)
+
+
 async def async_setup_entry(hass, entry, async_add_entities):
+    """Set up Hunter BTT switches."""
 
     async_add_entities(
         [
@@ -22,11 +35,7 @@ class HunterTimerEnabled(HunterEntity, SwitchEntity):
     _attr_name = "Timer Enabled"
 
     def __init__(self, coordinator):
-        self.entity_description = type(
-            "Description",
-            (),
-            {"key": "timer_enabled"},
-        )
+        self.entity_description = TIMER_ENABLED_DESCRIPTION
         super().__init__(
             coordinator,
             self.entity_description,
@@ -48,11 +57,7 @@ class HunterCyclingEnabled(HunterEntity, SwitchEntity):
     _attr_name = "Cycling Enabled"
 
     def __init__(self, coordinator):
-        self.entity_description = type(
-            "Description",
-            (),
-            {"key": "cycling_enabled"},
-        )
+        self.entity_description = CYCLING_ENABLED_DESCRIPTION
         super().__init__(
             coordinator,
             self.entity_description,
