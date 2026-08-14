@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from homeassistant.components.sensor import (
+    SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
-    SensorDeviceClass,
 )
 from homeassistant.const import PERCENTAGE
 
@@ -16,7 +16,10 @@ from .entity import HunterEntity
 
 @dataclass(frozen=True, kw_only=True)
 class HunterSensorDescription(SensorEntityDescription):
+    """Description of a Hunter BTT sensor."""
+
     value_key: str
+    zone: int | None = None
 
 
 SENSORS = (
@@ -36,13 +39,16 @@ SENSORS = (
     HunterSensorDescription(
         key="runtime",
         name="Manual Runtime",
-        value_key="manual_runtime",
+        value_key="runtime",
         native_unit_of_measurement="s",
+        zone=1,
     ),
 )
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
+    """Set up Hunter BTT sensors."""
+
     coordinator = entry.runtime_data
 
     async_add_entities(
@@ -52,11 +58,21 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 
 class HunterSensor(HunterEntity, SensorEntity):
+    """Hunter BTT sensor."""
 
     entity_description: HunterSensorDescription
 
     @property
     def native_value(self):
-        return self.coordinator.state.get(
-            self.entity_description.value_key
+        """Return the current sensor value."""
+
+        description = self.entity_description
+
+        if description.zone is not None:
+            return self.coordinator.zone_runtime(
+                description.zone
+            )
+
+        return self.coordinator.data.get(
+            description.value_key
         )

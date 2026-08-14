@@ -24,6 +24,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 
 class HunterRuntimeNumber(HunterEntity, NumberEntity):
+    """Manual runtime for Zone 1."""
 
     _attr_name = "Manual Runtime"
     _attr_native_min_value = 1
@@ -37,12 +38,16 @@ class HunterRuntimeNumber(HunterEntity, NumberEntity):
             coordinator,
             self.entity_description,
         )
+        self._zone = 1
 
     @property
     def native_value(self):
-        return self.coordinator.state["manual_runtime"]
+        """Return the configured Zone 1 runtime."""
+        return self.coordinator.zone_runtime(1)
 
     async def async_set_native_value(self, value):
+        """Set the configured Zone 1 runtime."""
         await self.coordinator.async_set_manual_runtime(
-            int(value)
+            1,
+            int(value),
         )

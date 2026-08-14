@@ -22,15 +22,18 @@ CYCLING_ENABLED_DESCRIPTION = SwitchEntityDescription(
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up Hunter BTT switches."""
 
+    coordinator = entry.runtime_data
+
     async_add_entities(
         [
-            HunterTimerEnabled(entry.runtime_data),
-            HunterCyclingEnabled(entry.runtime_data),
+            HunterTimerEnabled(coordinator),
+            HunterCyclingEnabled(coordinator),
         ]
     )
 
 
 class HunterTimerEnabled(HunterEntity, SwitchEntity):
+    """Timer-enabled switch for Zone 1."""
 
     _attr_name = "Timer Enabled"
 
@@ -40,19 +43,24 @@ class HunterTimerEnabled(HunterEntity, SwitchEntity):
             coordinator,
             self.entity_description,
         )
+        self._zone = 1
 
     @property
     def is_on(self):
-        return self.coordinator.state["timer_enabled"]
+        """Return whether Zone 1 timer mode is enabled."""
+        return self.coordinator.timer_enabled(1)
 
     async def async_turn_on(self, **kwargs):
-        await self.coordinator.async_enable_timer(True)
+        """Enable Zone 1 timer mode."""
+        await self.coordinator.async_enable_timer(1, True)
 
     async def async_turn_off(self, **kwargs):
-        await self.coordinator.async_enable_timer(False)
+        """Disable Zone 1 timer mode."""
+        await self.coordinator.async_enable_timer(1, False)
 
 
 class HunterCyclingEnabled(HunterEntity, SwitchEntity):
+    """Cycling-enabled switch for Zone 1."""
 
     _attr_name = "Cycling Enabled"
 
@@ -62,13 +70,17 @@ class HunterCyclingEnabled(HunterEntity, SwitchEntity):
             coordinator,
             self.entity_description,
         )
+        self._zone = 1
 
     @property
     def is_on(self):
-        return self.coordinator.state["cycling_enabled"]
+        """Return whether Zone 1 cycling mode is enabled."""
+        return self.coordinator.cycling_enabled(1)
 
     async def async_turn_on(self, **kwargs):
-        await self.coordinator.async_enable_cycling(True)
+        """Enable Zone 1 cycling mode."""
+        await self.coordinator.async_enable_cycling(1, True)
 
     async def async_turn_off(self, **kwargs):
-        await self.coordinator.async_enable_cycling(False)
+        """Disable Zone 1 cycling mode."""
+        await self.coordinator.async_enable_cycling(1, False)
