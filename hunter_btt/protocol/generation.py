@@ -27,10 +27,20 @@ FIRST_SERVICE_UUID = "0000fcc0-0000-1000-8000-00805f9b34fb"
 SECOND_SERVICE_UUID = "0000ff80-0000-1000-8000-00805f9b34fb"
 
 
-def detect_generation(service_uuids: set[str]) -> HunterGeneration:
+def detect_generation(
+    service_uuids: set[str],
+    device_name: str | None = None,
+    characteristic_uuids: set[str] | None = None,
+) -> HunterGeneration:
     """Detect generation from discovered GATT services."""
 
     normalized = {str(uuid).lower() for uuid in service_uuids}
+
+    # The Android reference implementation classifies BTT-named devices as
+    # First-generation before connecting.  Use that as the primary signal
+    # when available; otherwise fall back to the discovered service.
+    if (device_name or "").strip().upper().startswith("BTT"):
+        return HunterGeneration.FIRST
 
     if FIRST_SERVICE_UUID in normalized:
         return HunterGeneration.FIRST
