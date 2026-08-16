@@ -166,7 +166,45 @@ class HunterBLEManager:
             services = self.connection.service_uuids
             characteristics = self.connection.characteristic_uuids
 
-            self._generation = detect_generation(services)
+            self._generation = detect_generation(
+                services,
+                device_name=self.name,
+                characteristic_uuids=characteristics,
+            )
+
+            if (
+                self._generation is HunterGeneration.FIRST
+                and "0000fcc0-0000-1000-8000-00805f9b34fb"
+                not in {str(uuid).lower() for uuid in services}
+            ):
+                _LOGGER.error(
+                    "Device name %r is classified as First-generation by the "
+                    "Android naming rule, but GATT does not expose FCC0; "
+                    "BTT100 FF80 protocol mapping is not yet proven.",
+                    self.name,
+                )
+                await self.connection.disconnect()
+                self.connected = False
+                raise HunterManagerError(
+                    "First-generation BTT device does not expose the FCC0 "
+                    "service used by the current First-generation protocol "
+                    "implementation."
+                )
+
+            # Never send the proven FF83 transaction to an FF80 device
+            # unless FF83 is actually present.  The observed BTT100 exposes
+            # FF80 but not FF83.
+            if (
+                self._generation is HunterGeneration.SECOND
+                and "0000ff83-0000-1000-8000-00805f9b34fb"
+                not in {str(uuid).lower() for uuid in characteristics}
+            ):
+                await self.connection.disconnect()
+                self.connected = False
+                raise HunterManagerError(
+                    "FF80 controller does not expose the proven FF83 command "
+                    "characteristic; its protocol profile is not yet mapped."
+                )
 
             if self._generation is HunterGeneration.UNKNOWN:
                 await self.connection.disconnect()
