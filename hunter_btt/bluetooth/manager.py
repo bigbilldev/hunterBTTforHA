@@ -1,7 +1,13 @@
 """High-level BLE manager for Hunter BTT controllers.
 
-Supports both Hunter protocol generations while preserving the existing
-HunterConnection -> HunterBLEClient -> HunterTransactionEngine architecture.
+This manager keeps protocol selection above the transaction layer.
+
+Important:
+The FF80 service alone does NOT prove that the controller uses the
+FF83/second-generation command protocol.  The BTT100 test device exposes
+FF80 but does not expose a writable FF83 characteristic.  Such a device is
+therefore treated as an FF80 legacy profile and is deliberately prevented
+from entering the FF83 transaction path until its FFAx protocol is mapped.
 """
 
 from __future__ import annotations
@@ -63,6 +69,8 @@ from .transaction import HunterTransactionEngine
 
 _LOGGER = logging.getLogger(__name__)
 
+COMMAND_UUID = "0000ff83-0000-1000-8000-00805f9b34fb"
+SECOND_SERVICE_UUID = "0000ff80-0000-1000-8000-00805f9b34fb"
 COMMAND_DELAY = 0.25
 
 
@@ -96,6 +104,9 @@ class HunterBLEManager:
             zone_count=0,
         )
 
+        # True for the BTT100-style FF80 service which does not expose FF83.
+        self._ff80_legacy = False
+
         self.cache: dict[str, bytes] = {}
         self.state: dict[str, Any] = {
             "battery": None,
@@ -116,7 +127,7 @@ class HunterBLEManager:
         self._state_callback = callback
 
     async def _notify_state_changed(self) -> None:
-        """Notify the coordinator without assuming callback type."""
+        """Notify the coordinator."""
         if self._state_callback is None:
             return
 
@@ -126,10 +137,12 @@ class HunterBLEManager:
 
     @property
     def generation(self) -> HunterGeneration:
+        """Return detected generation."""
         return self._generation
 
     @property
     def capabilities(self) -> HunterCapabilities:
+        """Return detected capabilities."""
         return self._capabilities
 
     @property
@@ -155,8 +168,13 @@ class HunterBLEManager:
     def available(self) -> bool:
         return self.connected
 
+    @property
+    def legacy_ff80(self) -> bool:
+        """Return whether this is the FF80/no-FF83 legacy profile."""
+        return self._ff80_legacy
+
     async def connect(self) -> None:
-        """Connect and identify the protocol generation."""
+        """Connect and identify the protocol profile."""
         if self.connected:
             return
 
@@ -166,80 +184,66 @@ class HunterBLEManager:
             services = self.connection.service_uuids
             characteristics = self.connection.characteristic_uuids
 
-            self._generation = detect_generation(
-                services,
-                device_name=self.name,
-                characteristic_uuids=characteristics,
+            self._generation = detect_generation(services)
+
+            # FF80 is shared by devices which do not necessarily use FF83.
+            # The BTT100 test device has FF80 but no FF83. Do not route it
+            # into the FF83 transaction engine.
+            self._ff80_legacy = (
+                SECOND_SERVICE_UUID in services
+                and COMMAND_UUID not in characteristics
             )
 
-            if (
-                self._generation is HunterGeneration.FIRST
-                and "0000fcc0-0000-1000-8000-00805f9b34fb"
-                not in {str(uuid).lower() for uuid in services}
-            ):
-                _LOGGER.error(
-                    "Device name %r is classified as First-generation by the "
-                    "Android naming rule, but GATT does not expose FCC0; "
-                    "BTT100 FF80 protocol mapping is not yet proven.",
-                    self.name,
+            if self._ff80_legacy:
+                self._generation = HunterGeneration.FIRST
+                zone_count = 1
+                _LOGGER.warning(
+                    "Hunter BTT legacy FF80 profile detected: "
+                    "FF83 is absent; using one-zone legacy profile"
                 )
-                await self.connection.disconnect()
-                self.connected = False
-                raise HunterManagerError(
-                    "First-generation BTT device does not expose the FCC0 "
-                    "service used by the current First-generation protocol "
-                    "implementation."
-                )
+            else:
+                if self._generation is HunterGeneration.UNKNOWN:
+                    await self.connection.disconnect()
+                    raise HunterManagerError(
+                        "Unable to identify Hunter BLE protocol generation."
+                    )
 
-            # Never send the proven FF83 transaction to an FF80 device
-            # unless FF83 is actually present.  The observed BTT100 exposes
-            # FF80 but not FF83.
-            if (
-                self._generation is HunterGeneration.SECOND
-                and "0000ff83-0000-1000-8000-00805f9b34fb"
-                not in {str(uuid).lower() for uuid in characteristics}
-            ):
-                await self.connection.disconnect()
-                self.connected = False
-                raise HunterManagerError(
-                    "FF80 controller does not expose the proven FF83 command "
-                    "characteristic; its protocol profile is not yet mapped."
-                )
-
-            if self._generation is HunterGeneration.UNKNOWN:
-                await self.connection.disconnect()
-                raise HunterManagerError(
-                    "Unable to identify Hunter BLE protocol generation."
+                zone_count = detect_zone_count(
+                    characteristics,
+                    self._generation,
                 )
 
             self._capabilities = HunterCapabilities(
                 generation=self._generation,
-                zone_count=detect_zone_count(
-                    characteristics,
-                    self._generation,
-                ),
+                zone_count=zone_count,
                 service_uuid=(
-                    "0000fcc0-0000-1000-8000-00805f9b34fb"
-                    if self._generation is HunterGeneration.FIRST
-                    else "0000ff80-0000-1000-8000-00805f9b34fb"
+                    SECOND_SERVICE_UUID
+                    if SECOND_SERVICE_UUID in services
+                    else "0000fcc0-0000-1000-8000-00805f9b34fb"
                 ),
             )
 
             self.connected = True
 
             _LOGGER.info(
-                "Connected to Hunter %s: generation=%s zones=%d",
+                "Connected to Hunter %s: generation=%s zones=%d "
+                "legacy_ff80=%s",
                 self.address,
                 self._generation.value,
                 self._capabilities.zone_count,
+                self._ff80_legacy,
             )
 
-            if self._generation is HunterGeneration.SECOND:
+            if (
+                self._generation is HunterGeneration.SECOND
+                and not self._ff80_legacy
+            ):
                 await self.client.subscribe(
                     self._notification_received,
                 )
 
             self.last_seen = datetime.utcnow()
+            self.rssi = await self.connection.read_rssi()
             await self._notify_state_changed()
 
         except HunterManagerError:
@@ -251,12 +255,13 @@ class HunterBLEManager:
                 await self.connection.disconnect()
             except Exception:
                 pass
+
             raise HunterManagerError(
                 f"Unable to connect to Hunter controller: {err}"
             ) from err
 
     async def disconnect(self) -> None:
-        """Disconnect and clear the connection state."""
+        """Disconnect and clear connection state."""
         if not self.connected and not self.connection.connected:
             return
 
@@ -275,6 +280,7 @@ class HunterBLEManager:
             await self._notify_state_changed()
 
     async def ensure_connected(self) -> None:
+        """Ensure the controller is connected."""
         if not self.connected or not self.connection.connected:
             await self.connect()
 
@@ -283,11 +289,12 @@ class HunterBLEManager:
         uuid: str,
         payload: bytes,
     ) -> None:
-        """Handle Second-generation notifications."""
+        """Handle second-generation notifications."""
         self.cache[uuid] = payload
         self.last_seen = datetime.utcnow()
 
-        await self.transaction.notification(uuid, payload)
+        if not self._ff80_legacy:
+            await self.transaction.notification(uuid, payload)
 
         decoded = decode_notification(uuid, payload)
 
@@ -303,7 +310,10 @@ class HunterBLEManager:
             if decoded.battery_percent is not None:
                 self.state["battery"] = decoded.battery_percent
         elif isinstance(decoded, CommandNotification):
-            _LOGGER.debug("Command ACK: %s", decoded.notification)
+            _LOGGER.debug(
+                "Command ACK: %s",
+                decoded.notification,
+            )
 
         await self._notify_state_changed()
 
@@ -315,11 +325,14 @@ class HunterBLEManager:
 
     async def _write(self, uuid: str, payload: bytes) -> None:
         await self.ensure_connected()
-        await self.transaction.write_characteristic(uuid, payload)
+        await self.transaction.write_characteristic(
+            uuid,
+            payload,
+        )
         self.cache[uuid] = payload
 
     async def refresh(self) -> dict[str, Any]:
-        """Refresh only characteristics appropriate to this generation."""
+        """Refresh only characteristics appropriate to this profile."""
         async with self._refresh_lock:
             await self.ensure_connected()
 
@@ -330,6 +343,12 @@ class HunterBLEManager:
                     "Failed reading battery level",
                     exc_info=True,
                 )
+
+            # Do not guess at the BTT100 FFAx protocol yet.
+            if self._ff80_legacy:
+                self.last_seen = datetime.utcnow()
+                await self._notify_state_changed()
+                return self.state
 
             if self._generation is HunterGeneration.FIRST:
                 self.last_seen = datetime.utcnow()
@@ -361,7 +380,7 @@ class HunterBLEManager:
             return self.state
 
     async def _refresh_zone(self, zone: int) -> None:
-        """Refresh one Second-generation zone."""
+        """Refresh one second-generation zone."""
         zone_state = self.zone(zone)
 
         try:
@@ -430,7 +449,15 @@ class HunterBLEManager:
         )
 
     async def refresh_zone(self, zone: int) -> dict[str, Any]:
+        """Refresh a single zone."""
         await self.ensure_connected()
+
+        if self._ff80_legacy:
+            if zone != 1:
+                raise HunterManagerError(
+                    "Legacy FF80 Zone 2 support is not proven."
+                )
+            return self.zone(zone)
 
         if self._generation is HunterGeneration.FIRST:
             if zone != 1:
@@ -444,6 +471,7 @@ class HunterBLEManager:
         return self.zone(zone)
 
     async def refresh_battery(self) -> int | None:
+        """Read the battery characteristic."""
         payload = await self._read(BATTERY_LEVEL_UUID)
         battery = parse_battery(payload)
         self.state["battery"] = battery
@@ -463,12 +491,18 @@ class HunterBLEManager:
                 f"Zone {zone} is not supported."
             )
 
+        if self._ff80_legacy:
+            raise HunterManagerError(
+                "BTT100 legacy FF80 protocol detected. "
+                "FF83 is not present; the legacy FFAx start "
+                "protocol has not yet been mapped."
+            )
+
         if self._generation is HunterGeneration.FIRST:
             await self._start_zone_first(zone, runtime)
             return
 
         await self.transaction.start_zone(zone, runtime)
-
         self.state["running"] = True
         self.state["active_zone"] = zone
         self.state["remaining_seconds"] = runtime
@@ -480,16 +514,13 @@ class HunterBLEManager:
         zone: int,
         runtime: int,
     ) -> None:
-        """Start the proven First-generation single-zone controller path."""
+        """Start the proven FCC0 first-generation controller path."""
         if zone != 1:
             raise HunterManagerError(
                 "First-generation Zone 2 support is not proven."
             )
 
-        # The current First-generation implementation uses the C3 mode
-        # selection to choose the D9 or EB command characteristic.
         c3_payload = await self._read(FIRST_C3_UUID)
-
         try:
             c3 = FirstC3.from_payload(
                 decode_frame(c3_payload).payload
@@ -523,31 +554,35 @@ class HunterBLEManager:
         )
 
         await asyncio.sleep(COMMAND_DELAY)
-
         self.state["running"] = True
         self.state["active_zone"] = zone
         self.state["remaining_seconds"] = runtime
         self.zone(zone)["runtime"] = runtime
-
         await self._notify_state_changed()
 
     async def stop(self) -> None:
         """Stop manual watering."""
         await self.ensure_connected()
 
+        if self._ff80_legacy:
+            raise HunterManagerError(
+                "BTT100 legacy FF80 protocol detected. "
+                "FF83 is not used; the legacy FFAx stop "
+                "protocol has not yet been mapped."
+            )
+
         if self._generation is HunterGeneration.FIRST:
             await self._stop_first()
             return
 
         await self.transaction.stop()
-
         self.state["running"] = False
         self.state["active_zone"] = 0
         self.state["remaining_seconds"] = 0
         await self._notify_state_changed()
 
     async def _stop_first(self) -> None:
-        """Stop the proven First-generation single-zone controller path."""
+        """Stop the proven FCC0 first-generation controller path."""
         c3_payload = await self._read(FIRST_C3_UUID)
 
         try:
@@ -598,7 +633,6 @@ class HunterBLEManager:
         )
 
         await asyncio.sleep(COMMAND_DELAY)
-
         self.state["running"] = False
         self.state["active_zone"] = 0
         self.state["remaining_seconds"] = 0
@@ -609,16 +643,21 @@ class HunterBLEManager:
         zone: int,
         runtime: int,
     ) -> None:
+        """Update the cached runtime for a zone."""
         self.zone(zone)["runtime"] = runtime
         await self._notify_state_changed()
 
     async def write_timer(self, zone: int, schedule) -> None:
+        """Write a second-generation timer schedule."""
         if self._generation is HunterGeneration.FIRST:
             raise HunterManagerError(
-                "Schedule writes are not yet supported for First-generation devices."
+                "Timer writes are not supported for this generation."
             )
 
-        from ..protocol.packets import build_timer_block, mutate_timer_config
+        from ..protocol.packets import (
+            build_timer_block,
+            mutate_timer_config,
+        )
 
         timer_payload = build_timer_block(schedule)
         current = self.cache.get(ZONE_CONFIG_UUID[zone])
@@ -635,9 +674,10 @@ class HunterBLEManager:
         await self.refresh()
 
     async def enable_timer(self, zone: int, enabled: bool) -> None:
+        """Enable or disable a second-generation timer."""
         if self._generation is HunterGeneration.FIRST:
             raise HunterManagerError(
-                "Timer writes are not yet supported for First-generation devices."
+                "Timer writes are not supported for this generation."
             )
 
         zone_state = self.zone(zone)
@@ -659,9 +699,10 @@ class HunterBLEManager:
         await self.refresh()
 
     async def write_cycling(self, zone: int, schedule) -> None:
+        """Write a second-generation cycling schedule."""
         if self._generation is HunterGeneration.FIRST:
             raise HunterManagerError(
-                "Schedule writes are not yet supported for First-generation devices."
+                "Cycling writes are not supported for this generation."
             )
 
         from ..protocol.packets import (
@@ -679,14 +720,25 @@ class HunterBLEManager:
             schedule.enabled,
             schedule.day_mask,
         )
-        await self._write(ZONE_CYCLING_UUID[zone], cycling_payload)
-        await self._write(ZONE_CONFIG_UUID[zone], config_payload)
+        await self._write(
+            ZONE_CYCLING_UUID[zone],
+            cycling_payload,
+        )
+        await self._write(
+            ZONE_CONFIG_UUID[zone],
+            config_payload,
+        )
         await self.refresh()
 
-    async def enable_cycling(self, zone: int, enabled: bool) -> None:
+    async def enable_cycling(
+        self,
+        zone: int,
+        enabled: bool,
+    ) -> None:
+        """Enable or disable second-generation cycling."""
         if self._generation is HunterGeneration.FIRST:
             raise HunterManagerError(
-                "Cycling writes are not yet supported for First-generation devices."
+                "Cycling writes are not supported for this generation."
             )
 
         zone_state = self.zone(zone)
@@ -704,10 +756,14 @@ class HunterBLEManager:
             enabled,
             cycling.get("days_mask", 0),
         )
-        await self._write(ZONE_CONFIG_UUID[zone], payload)
+        await self._write(
+            ZONE_CONFIG_UUID[zone],
+            payload,
+        )
         await self.refresh()
 
     async def read_characteristic(self, uuid: str) -> bytes:
+        """Read a raw GATT characteristic."""
         return await self._read(uuid)
 
     async def write_characteristic(
@@ -715,6 +771,12 @@ class HunterBLEManager:
         uuid: str,
         payload: bytes,
     ) -> None:
+        """Write a raw GATT characteristic."""
+        if self._ff80_legacy and uuid.lower() == COMMAND_UUID:
+            raise HunterManagerError(
+                "FF83 is not available on the BTT100 legacy FF80 profile."
+            )
+
         await self._write(uuid, payload)
 
     def get_cached(self, uuid: str) -> bytes | None:
@@ -725,17 +787,20 @@ class HunterBLEManager:
 
     @property
     def diagnostics(self) -> dict[str, Any]:
+        """Return diagnostic information."""
         return {
             "address": self.address,
             "name": self.name,
             "connected": self.connected,
             "generation": self._generation.value,
             "zone_count": self._capabilities.zone_count,
+            "legacy_ff80": self._ff80_legacy,
             "last_seen": self.last_seen,
             "cache_entries": len(self.cache),
             "state": self.state,
         }
 
     async def shutdown(self) -> None:
+        """Shut down the manager."""
         self.clear_cache()
         await self.disconnect()
