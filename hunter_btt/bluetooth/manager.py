@@ -502,10 +502,25 @@ class HunterBLEManager:
                 "protocol has not yet been mapped."
             )
 
+        _LOGGER.error(
+            "HUNTER ROUTING: name=%r generation=%s capabilities=%s "
+            "legacy_ff80=%s connected=%s zone=%s runtime=%s",
+            self.name,
+            self._generation,
+            self._capabilities,
+            self._ff80_legacy,
+            self.connected,
+            zone,
+            runtime,
+        )
+
         if self._generation is HunterGeneration.FIRST:
             await self._start_zone_first(zone, runtime)
             return
 
+        _LOGGER.error(
+            "HUNTER ROUTING: entering FF83 transaction path"
+        )
         await self.transaction.start_zone(zone, runtime)
         self.state["running"] = True
         self.state["active_zone"] = zone
