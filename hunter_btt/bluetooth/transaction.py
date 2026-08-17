@@ -1,23 +1,4 @@
-"""
-transaction.py
-
-Hunter BTT transaction engine.
-
-This module serializes every BLE write to the controller and implements the
-command sequences discovered during reverse engineering.
-
-Responsibilities
-----------------
-* Only one transaction at a time
-* Retry transient BLE failures
-* Execute manual watering sequences
-* Execute stop sequence
-* Wait for command acknowledgements
-* Small delays required by Hunter firmware
-
-This module intentionally contains NO Home Assistant entities or coordinator
-logic.
-"""
+"""Serialized Hunter BTT BLE transaction engine."""
 
 from __future__ import annotations
 
@@ -38,16 +19,10 @@ from ..protocol.uuids import COMMAND_UUID
 
 _LOGGER = logging.getLogger(__name__)
 
-#
-# Timing discovered from reverse engineering
-#
-
 PREPARE_DELAY = 0.20
 ARM_DELAY = 0.50
 STOP_DELAY = 0.20
-
 ACK_TIMEOUT = 5.0
-
 MAX_RETRIES = 2
 
 
@@ -60,54 +35,38 @@ class TransactionTimeout(TransactionError):
 
 
 class HunterTransactionEngine:
-    """
-    Executes serialized Hunter BLE transactions.
-
-    All writes pass through this class.
-    """
+    """Execute serialized BLE transactions with an FF83 safety interlock."""
 
     def __init__(self, connection) -> None:
         self._connection = connection
-
         self._lock = asyncio.Lock()
-
         self._ack_event = asyncio.Event()
-
         self._last_ack: bytes | None = None
-
-        # FF83 is opt-in.  The manager enables it only after generation
-        # detection and characteristic-property validation.  This is a
-        # defensive boundary so no accidental code path can write FF83 on
-        # a first-generation controller.
         self._ff83_enabled = False
 
+    @property
+    def ff83_enabled(self) -> bool:
+        return self._ff83_enabled
+
     def set_ff83_enabled(self, enabled: bool) -> None:
-        """Allow FF83 writes only for a validated second-generation device."""
+        """Explicitly authorize FF83 only for a validated device."""
         self._ff83_enabled = bool(enabled)
-        _LOGGER.debug("FF83 transaction writes enabled=%s", self._ff83_enabled)
+        _LOGGER.info("FF83 transaction authorization=%s", self._ff83_enabled)
 
-    #
-    # Notification callback
-    #
+    def _assert_write_allowed(self, uuid: str) -> None:
+        """Hard safety boundary: FF83 is never written unless authorized."""
+        if str(uuid).strip().lower() != COMMAND_UUID:
+            return
+        if not self._ff83_enabled:
+            raise TransactionError(
+                "FF83 write blocked by protocol safety interlock; "
+                "no BLE write was attempted."
+            )
 
-    async def notification(
-        self,
-        uuid: str,
-        payload: bytes,
-    ) -> None:
-        """
-        Receive FF82 acknowledgement.
-
-        manager.py forwards notifications here.
-        """
-
+    async def notification(self, uuid: str, payload: bytes) -> None:
         if uuid.lower().endswith("ff82-0000-1000-8000-00805f9b34fb"):
             self._last_ack = payload
             self._ack_event.set()
-
-    #
-    # Synchronization
-    #
 
     @asynccontextmanager
     async def transaction(self):
@@ -116,26 +75,14 @@ class HunterTransactionEngine:
             self._last_ack = None
             yield
 
-    #
-    # ACK waiting
-    #
-
     async def wait_for_ack(self) -> bytes:
         try:
-            await asyncio.wait_for(
-                self._ack_event.wait(),
-                ACK_TIMEOUT,
-            )
+            await asyncio.wait_for(self._ack_event.wait(), ACK_TIMEOUT)
         except TimeoutError as exc:
             raise TransactionTimeout(
                 "Timed out waiting for Hunter acknowledgement."
             ) from exc
-
         return self._last_ack or b""
-
-    #
-    # Generic BLE write
-    #
 
     async def write(
         self,
@@ -144,197 +91,93 @@ class HunterTransactionEngine:
         *,
         response: bool = True,
     ) -> None:
-
-        if uuid.lower() == COMMAND_UUID.lower() and not self._ff83_enabled:
-            raise TransactionError(
-                "FF83 write blocked: controller has not been validated "
-                "as a second-generation FF83 device."
-            )
+        self._assert_write_allowed(uuid)
 
         async def _write():
             await self._connection.client.write(
-                uuid,
-                payload,
-                response=response,
+                uuid, payload, response=response
             )
 
         await self._retry(_write)
 
-    #
-    # Manual watering
-    #
-
-    async def start_zone(
-        self,
-        zone: int,
-        runtime_seconds: int,
-    ) -> None:
-        """
-        Start manual watering.
-
-        Sequence discovered from ESP32 firmware:
-
-            prepare
-            duration
-            500 ms
-            arm
-        """
+    async def start_zone(self, zone: int, runtime_seconds: int) -> None:
+        """Execute the proven second-generation FF83 start sequence."""
+        if not self._ff83_enabled:
+            raise TransactionError(
+                "FF83 start blocked: transaction authorization is disabled."
+            )
 
         async with self.transaction():
-
-            _LOGGER.debug(
-                "Starting zone %s for %s sec",
-                zone,
-                runtime_seconds,
-            )
-
-            #
-            # Prepare
-            #
-
-            await self.write(
-                COMMAND_UUID,
-                build_prepare_packet(zone),
-            )
-
+            await self.write(COMMAND_UUID, build_prepare_packet(zone))
             await asyncio.sleep(PREPARE_DELAY)
-
-            #
-            # Runtime
-            #
-
             await self.write(
                 COMMAND_UUID,
                 build_duration_packet(runtime_seconds),
             )
-
             await asyncio.sleep(ARM_DELAY)
-
-            #
-            # Arm
-            #
-
-            await self.write(
-                COMMAND_UUID,
-                build_arm_packet(zone),
-            )
-
-            #
-            # Optional acknowledgement
-            #
-
+            await self.write(COMMAND_UUID, build_arm_packet(zone))
             try:
                 await self.wait_for_ack()
             except TransactionTimeout:
-                _LOGGER.debug(
-                    "No acknowledgement received after start."
-                )
-
-    #
-    # Stop
-    #
+                _LOGGER.debug("No acknowledgement received after start.")
 
     async def stop(self) -> None:
-        """
-        Stop watering.
-
-        The Hunter firmware expects the stop command twice.
-        """
+        """Execute the proven second-generation FF83 stop sequence."""
+        if not self._ff83_enabled:
+            raise TransactionError(
+                "FF83 stop blocked: transaction authorization is disabled."
+            )
 
         async with self.transaction():
-
             packet = build_stop_packet()
-
-            await self.write(
-                COMMAND_UUID,
-                packet,
-            )
-
+            await self.write(COMMAND_UUID, packet)
             await asyncio.sleep(STOP_DELAY)
-
-            await self.write(
-                COMMAND_UUID,
-                packet,
-            )
-
+            await self.write(COMMAND_UUID, packet)
             try:
                 await self.wait_for_ack()
             except TransactionTimeout:
                 pass
 
-    #
-    # Generic retry wrapper
-    #
-
     async def _retry(
         self,
         func: Callable[[], Awaitable[None]],
     ) -> None:
-
         last_error: Exception | None = None
-
         for attempt in range(MAX_RETRIES + 1):
-
             try:
                 await self._connection.ensure_connection()
                 await func()
                 return
-
             except BleakError as err:
-
                 last_error = err
-
                 _LOGGER.warning(
                     "BLE transaction failed (%s/%s): %s",
                     attempt + 1,
                     MAX_RETRIES + 1,
                     err,
                 )
-
                 await self._connection.reconnect()
-
                 await asyncio.sleep(0.25)
 
-        raise TransactionError(
-            "BLE transaction failed."
-        ) from last_error
+        raise TransactionError("BLE transaction failed.") from last_error
 
-    #
-    # Convenience wrappers
-    #
+    async def command(self, payload: bytes) -> None:
+        await self.write(COMMAND_UUID, payload)
 
-    async def command(
-        self,
-        payload: bytes,
-    ) -> None:
-        await self.write(
-            COMMAND_UUID,
-            payload,
-        )
-
-    async def read(
-        self,
-        uuid: str,
-    ) -> bytes:
-
+    async def read(self, uuid: str) -> bytes:
         async def _read():
             return await self._connection.client.read(uuid)
 
         last_error = None
-
         for _ in range(MAX_RETRIES + 1):
-
             try:
                 await self._connection.ensure_connection()
                 return await _read()
-
             except BleakError as err:
                 last_error = err
                 await self._connection.reconnect()
 
-        raise TransactionError(
-            f"Failed reading {uuid}"
-        ) from last_error
+        raise TransactionError(f"Failed reading {uuid}") from last_error
 
     async def write_characteristic(
         self,
@@ -347,19 +190,9 @@ class HunterTransactionEngine:
         self,
         *operations: Callable[[], Awaitable[None]],
     ) -> None:
-        """
-        Execute several BLE operations as a single transaction.
-        """
-
         async with self.transaction():
-
             for operation in operations:
                 await operation()
-
-    @property
-    def ff83_enabled(self) -> bool:
-        """Return whether FF83 command writes are authorized."""
-        return self._ff83_enabled
 
     @property
     def busy(self) -> bool:
