@@ -75,6 +75,17 @@ class HunterTransactionEngine:
 
         self._last_ack: bytes | None = None
 
+        # FF83 is opt-in.  The manager enables it only after generation
+        # detection and characteristic-property validation.  This is a
+        # defensive boundary so no accidental code path can write FF83 on
+        # a first-generation controller.
+        self._ff83_enabled = False
+
+    def set_ff83_enabled(self, enabled: bool) -> None:
+        """Allow FF83 writes only for a validated second-generation device."""
+        self._ff83_enabled = bool(enabled)
+        _LOGGER.debug("FF83 transaction writes enabled=%s", self._ff83_enabled)
+
     #
     # Notification callback
     #
@@ -133,6 +144,12 @@ class HunterTransactionEngine:
         *,
         response: bool = True,
     ) -> None:
+
+        if uuid.lower() == COMMAND_UUID.lower() and not self._ff83_enabled:
+            raise TransactionError(
+                "FF83 write blocked: controller has not been validated "
+                "as a second-generation FF83 device."
+            )
 
         async def _write():
             await self._connection.client.write(
@@ -338,6 +355,11 @@ class HunterTransactionEngine:
 
             for operation in operations:
                 await operation()
+
+    @property
+    def ff83_enabled(self) -> bool:
+        """Return whether FF83 command writes are authorized."""
+        return self._ff83_enabled
 
     @property
     def busy(self) -> bool:

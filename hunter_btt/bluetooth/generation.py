@@ -1,13 +1,14 @@
-"""Hunter BTT protocol generation and capability detection."""
+"""Hunter BTT generation detection and capabilities."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable
 
 
 class HunterGeneration(str, Enum):
+    """Hunter BLE protocol generation."""
+
     FIRST = "first"
     SECOND = "second"
     UNKNOWN = "unknown"
@@ -15,6 +16,8 @@ class HunterGeneration(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class HunterCapabilities:
+    """Capabilities discovered from GATT."""
+
     generation: HunterGeneration
     zone_count: int
     service_uuid: str | None = None
@@ -22,78 +25,56 @@ class HunterCapabilities:
 
 FIRST_SERVICE_UUID = "0000fcc0-0000-1000-8000-00805f9b34fb"
 SECOND_SERVICE_UUID = "0000ff80-0000-1000-8000-00805f9b34fb"
-SECOND_ZONE1_CONFIG_UUID = "0000ff86-0000-1000-8000-00805f9b34fb"
-SECOND_ZONE2_CONFIG_UUID = "0000ff8b-0000-1000-8000-00805f9b34fb"
-
-
-def _normalize(values: Iterable[object] | None) -> set[str]:
-    """Normalize UUID-like collections safely."""
-    if values is None:
-        return set()
-    return {str(value).strip().lower() for value in values}
 
 
 def detect_generation(
-    service_uuids: Iterable[object],
+    service_uuids: set[str],
     device_name: str | None = None,
-    characteristic_uuids: Iterable[object] | None = None,
+    characteristic_uuids: set[str] | None = None,
 ) -> HunterGeneration:
-    """Use the proven Android device-name rule."""
-    services = _normalize(service_uuids)
-    name = (device_name or "").strip().upper()
+    """Detect generation from discovered GATT services."""
 
-    # AisWrapper classifies BTT-named devices as First before GATT
-    # protocol selection. FF80/FF83 must not override this.
-    if name.startswith("BTT"):
+    normalized = {str(uuid).lower() for uuid in service_uuids}
+
+    # The Android reference implementation classifies BTT-named devices as
+    # First-generation before connecting.  Use that as the primary signal
+    # when available; otherwise fall back to the discovered service.
+    if (device_name or "").strip().upper().startswith("BTT"):
         return HunterGeneration.FIRST
 
-    if SECOND_SERVICE_UUID in services:
+    if FIRST_SERVICE_UUID in normalized:
+        return HunterGeneration.FIRST
+
+    if SECOND_SERVICE_UUID in normalized:
         return HunterGeneration.SECOND
-
-    if FIRST_SERVICE_UUID in services:
-        return HunterGeneration.FIRST
 
     return HunterGeneration.UNKNOWN
 
 
-def validate_generation_services(
-    generation: HunterGeneration,
-    service_uuids: Iterable[object],
-) -> bool:
-    """Validate the service expected by the selected protocol family."""
-    services = _normalize(service_uuids)
-
-    if generation is HunterGeneration.FIRST:
-        return FIRST_SERVICE_UUID in services
-
-    if generation is HunterGeneration.SECOND:
-        return SECOND_SERVICE_UUID in services
-
-    return False
-
-
 def detect_zone_count(
-    characteristic_uuids: Iterable[object],
+    characteristic_uuids: set[str],
     generation: HunterGeneration,
 ) -> int:
-    """Determine currently supportable zone count conservatively."""
-    characteristics = _normalize(characteristic_uuids)
+    """Determine the currently proven zone count.
 
-    # The tested BTT100 is first-generation and one-zone. Do not infer
-    # another zone merely from the presence of FF8B or other FFxx UUIDs.
+    First-generation Zone 2 mapping is deliberately not guessed yet.
+    The tested BTT100 is therefore exposed as one zone.
+
+    Second-generation Zone 2 is identified by FF8B.
+    """
+
+    normalized = {str(uuid).lower() for uuid in characteristic_uuids}
+
     if generation is HunterGeneration.FIRST:
         return 1
 
-    # Second_83 explicitly models both zones in the reference protocol.
-    # Require both known zone configuration characteristics before exposing
-    # two zones; otherwise expose only the proven zone 1.
     if generation is HunterGeneration.SECOND:
-        if (
-            SECOND_ZONE1_CONFIG_UUID in characteristics
-            and SECOND_ZONE2_CONFIG_UUID in characteristics
-        ):
+        zone1 = "0000ff86-0000-1000-8000-00805f9b34fb" in normalized
+        zone2 = "0000ff8b-0000-1000-8000-00805f9b34fb" in normalized
+
+        if zone1 and zone2:
             return 2
-        if SECOND_ZONE1_CONFIG_UUID in characteristics:
+        if zone1:
             return 1
 
     return 0

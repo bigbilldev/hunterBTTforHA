@@ -129,16 +129,27 @@ class HunterBLEManager:
             )
 
             ff83_writable = self._ff83_is_writable()
+
+            # A first-generation controller must never authorize FF83,
+            # regardless of which FFxx UUIDs the transport happens to expose.
+            # A BTT100 may expose FF80 through the proxy even though it is a
+            # first-generation controller.
             self._ff80_legacy = (
-                SECOND_SERVICE_UUID in services and not ff83_writable
+                self._generation is HunterGeneration.FIRST
+                and SECOND_SERVICE_UUID in services
             )
-            if self.name.strip().upper().startswith("BTT"):
-                self._generation = HunterGeneration.FIRST
-                self._ff80_legacy = True
+
+            self.transaction.set_ff83_enabled(
+                self._generation is HunterGeneration.SECOND
+                and ff83_writable
+            )
 
             _LOGGER.info(
-                "Hunter command capability: FF83 writable=%s legacy_ff80=%s",
+                "Hunter command capability: generation=%s FF83 writable=%s "
+                "FF83 transaction enabled=%s legacy_ff80=%s",
+                self._generation.value,
                 ff83_writable,
+                self.transaction.ff83_enabled,
                 self._ff80_legacy,
             )
 
