@@ -36,21 +36,51 @@ def detect_generation(
     device_name: str | None = None,
     characteristic_uuids: set[str] | None = None,
 ) -> HunterGeneration:
-    normalized_name = normalize_android_device_name(device_name)
+    """Determine generation from GATT service identity first.
 
-    # Android-derived primary rule.
-    if normalized_name.upper().startswith("BTT"):
-        return HunterGeneration.FIRST
+    GATT services are authoritative when available.  Device names are only
+    a fallback because Android/HA names can be misleading or stale.
+    """
+    services = {
+        str(uuid).strip().lower()
+        for uuid in (service_uuids or set())
+    }
 
-    if normalized_name:
+    # Authoritative protocol identity.
+    if SECOND_SERVICE_UUID in services:
         return HunterGeneration.SECOND
-
-    services = {str(uuid).strip().lower() for uuid in (service_uuids or set())}
 
     if FIRST_SERVICE_UUID in services:
         return HunterGeneration.FIRST
-    if SECOND_SERVICE_UUID in services:
+
+    # If services are unavailable, characteristic sets can still provide
+    # a strong protocol identity.
+    chars = {
+        str(uuid).strip().lower()
+        for uuid in (characteristic_uuids or set())
+    }
+
+    second_markers = {
+        COMMAND_UUID,
+        "0000ff82-0000-1000-8000-00805f9b34fb",
+        "0000ff86-0000-1000-8000-00805f9b34fb",
+    }
+    first_markers = {
+        "0000fcd9-0000-1000-8000-00805f9b34fb",
+        "0000fceb-0000-1000-8000-00805f9b34fb",
+    }
+
+    if second_markers & chars:
         return HunterGeneration.SECOND
+
+    if first_markers & chars:
+        return HunterGeneration.FIRST
+
+    # Last-resort Android naming fallback.
+    normalized_name = normalize_android_device_name(device_name)
+    if normalized_name.upper().startswith("BTT"):
+        return HunterGeneration.FIRST
+
     return HunterGeneration.UNKNOWN
 
 
@@ -69,6 +99,7 @@ def detect_zone_count(
     if generation is HunterGeneration.SECOND:
         zone1 = "0000ff86-0000-1000-8000-00805f9b34fb" in chars
         zone2 = "0000ff8b-0000-1000-8000-00805f9b34fb" in chars
+
         if zone1 and zone2:
             return 2
         if zone1:
@@ -81,13 +112,13 @@ def validate_generation_services(
     generation: HunterGeneration,
     service_uuids: set[str] | None,
 ) -> bool:
-    services = {str(uuid).strip().lower() for uuid in (service_uuids or set())}
+    services = {
+        str(uuid).strip().lower()
+        for uuid in (service_uuids or set())
+    }
 
     if generation is HunterGeneration.FIRST:
-        return (
-            FIRST_SERVICE_UUID in services
-            or SECOND_SERVICE_UUID in services
-        )
+        return FIRST_SERVICE_UUID in services
 
     if generation is HunterGeneration.SECOND:
         return SECOND_SERVICE_UUID in services
