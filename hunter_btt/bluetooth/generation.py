@@ -1,12 +1,16 @@
-"""Hunter BTT generation detection based on the Android reference logic."""
+"""Hunter BTT generation detection and capabilities.
+
+Generation selection follows the decompiled Android application's rule:
+the local device name beginning with ``BTT`` identifies first generation;
+otherwise it is second generation. GATT service discovery is only a
+fallback when no usable device name is available.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
 
-# Public UUID constants retained here for compatibility with config_flow and
-# manager.py.  Protocol UUIDs are normalized to lowercase.
 FIRST_SERVICE_UUID = "0000fcc0-0000-1000-8000-00805f9b34fb"
 SECOND_SERVICE_UUID = "0000ff80-0000-1000-8000-00805f9b34fb"
 COMMAND_UUID = "0000ff83-0000-1000-8000-00805f9b34fb"
@@ -14,8 +18,6 @@ FCC0_SERVICE_UUID = FIRST_SERVICE_UUID
 
 
 class HunterGeneration(str, Enum):
-    """Hunter BLE protocol generation."""
-
     FIRST = "first"
     SECOND = "second"
     UNKNOWN = "unknown"
@@ -23,17 +25,14 @@ class HunterGeneration(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class HunterCapabilities:
-    """Capabilities discovered from the controller."""
-
     generation: HunterGeneration
     zone_count: int
     service_uuid: str | None = None
 
 
-def _normalize_name(device_name: str | None) -> str:
+def _android_name(device_name: str | None) -> str:
+    """Normalize HA's friendly 'Hunter BTT ...' name to Android's BTT name."""
     name = (device_name or "").strip()
-    # HA commonly presents this device as "Hunter BTT CBBB4", while the
-    # Android wrapper receives the BTT-prefixed local name.
     if name.upper().startswith("HUNTER BTT"):
         return name[7:].lstrip()
     return name
@@ -44,19 +43,13 @@ def detect_generation(
     device_name: str | None = None,
     characteristic_uuids: set[str] | None = None,
 ) -> HunterGeneration:
-    """Mirror AisWrapper generation selection.
+    name = _android_name(device_name)
 
-    Android's rule is:
-        device name starts with "BTT" -> First
-        otherwise -> Second
-
-    GATT is only a fallback when no usable device name is available.
-    """
-    name = _normalize_name(device_name)
-
+    # Android reference rule.
     if name.upper().startswith("BTT"):
         return HunterGeneration.FIRST
 
+    # If a non-empty name exists, Android classifies it as second.
     if name:
         return HunterGeneration.SECOND
 
@@ -68,7 +61,6 @@ def detect_generation(
         return HunterGeneration.FIRST
     if SECOND_SERVICE_UUID in services:
         return HunterGeneration.SECOND
-
     return HunterGeneration.UNKNOWN
 
 
@@ -76,14 +68,12 @@ def detect_zone_count(
     characteristic_uuids: set[str] | None,
     generation: HunterGeneration,
 ) -> int:
-    """Determine currently proven zone count."""
     chars = {
         str(uuid).strip().lower()
         for uuid in (characteristic_uuids or set())
     }
 
     if generation is HunterGeneration.FIRST:
-        # Confirmed BTT100 test device.
         return 1
 
     if generation is HunterGeneration.SECOND:
@@ -101,25 +91,15 @@ def validate_generation_services(
     generation: HunterGeneration,
     service_uuids: set[str] | None,
 ) -> bool:
-    """Compatibility validator for config flow.
-
-    This validates the expected service family after generation has been
-    selected; it does not change the Android name-based generation decision.
-    """
     services = {
         str(uuid).strip().lower()
         for uuid in (service_uuids or set())
     }
-
     if generation is HunterGeneration.FIRST:
-        return FIRST_SERVICE_UUID in services or SECOND_SERVICE_UUID in services
-
+        return (
+            FIRST_SERVICE_UUID in services
+            or SECOND_SERVICE_UUID in services
+        )
     if generation is HunterGeneration.SECOND:
         return SECOND_SERVICE_UUID in services
-
     return False
-
-
-def normalize_android_device_name(device_name: str | None) -> str:
-    """Return the BTT-prefixed name used by the Android generation rule."""
-    return _normalize_name(device_name)
