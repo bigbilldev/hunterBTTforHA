@@ -1,4 +1,4 @@
-"""Hunter BTT transaction engine with a hard FF83 safety interlock."""
+"""Serialized Hunter BTT transactions with an absolute FF83 safety guard."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class TransactionTimeout(TransactionError):
 
 
 class HunterTransactionEngine:
-    """Serialize BLE transactions and absolutely guard FF83 writes."""
+    """Serialize transactions and enforce the FF83 authorization boundary."""
 
     def __init__(self, connection) -> None:
         self._connection = connection
@@ -49,22 +49,25 @@ class HunterTransactionEngine:
         return self._ff83_enabled
 
     def set_ff83_enabled(self, enabled: bool) -> None:
-        """Authorize FF83 only when the manager has proven it is valid."""
         self._ff83_enabled = bool(enabled)
-        _LOGGER.info("FF83 transaction authorization=%s", self._ff83_enabled)
+        _LOGGER.info(
+            "FF83 transaction authorization=%s",
+            self._ff83_enabled,
+        )
 
     def _assert_write_allowed(self, uuid: str) -> None:
-        """Hard boundary: an unauthorized FF83 write never reaches BLE."""
-        if str(uuid).strip().lower() != COMMAND_UUID:
-            return
-        if not self._ff83_enabled:
-            raise TransactionError(
-                "FF83 write blocked by transaction safety interlock; "
-                "no BLE write was attempted."
-            )
+        """Reject FF83 before connection/retry/BLE code is reached."""
+        if str(uuid).strip().lower() == COMMAND_UUID:
+            if not self._ff83_enabled:
+                raise TransactionError(
+                    "FF83 WRITE BLOCKED before BLE I/O. "
+                    "This transaction is not authorized for this controller."
+                )
 
     async def notification(self, uuid: str, payload: bytes) -> None:
-        if uuid.lower().endswith("ff82-0000-1000-8000-00805f9b34fb"):
+        if uuid.lower().endswith(
+            "ff82-0000-1000-8000-00805f9b34fb"
+        ):
             self._last_ack = payload
             self._ack_event.set()
 
@@ -77,7 +80,10 @@ class HunterTransactionEngine:
 
     async def wait_for_ack(self) -> bytes:
         try:
-            await asyncio.wait_for(self._ack_event.wait(), ACK_TIMEOUT)
+            await asyncio.wait_for(
+                self._ack_event.wait(),
+                ACK_TIMEOUT,
+            )
         except TimeoutError as exc:
             raise TransactionTimeout(
                 "Timed out waiting for Hunter acknowledgement."
@@ -91,17 +97,20 @@ class HunterTransactionEngine:
         *,
         response: bool = True,
     ) -> None:
+        # CRITICAL: this is before _retry(), so an unauthorized FF83 write
+        # cannot produce a BLE Write-not-permitted error.
         self._assert_write_allowed(uuid)
 
         async def _write() -> None:
             await self._connection.client.write(
-                uuid, payload, response=response
+                uuid,
+                payload,
+                response=response,
             )
 
         await self._retry(_write)
 
     async def start_zone(self, zone: int, runtime_seconds: int) -> None:
-        """Execute the second-generation FF83 start sequence."""
         self._assert_write_allowed(COMMAND_UUID)
 
         async with self.transaction():
@@ -125,15 +134,15 @@ class HunterTransactionEngine:
             try:
                 await self.wait_for_ack()
             except TransactionTimeout:
-                _LOGGER.debug("No acknowledgement received after start.")
+                _LOGGER.debug(
+                    "No acknowledgement received after start."
+                )
 
     async def stop(self) -> None:
-        """Execute the second-generation FF83 stop sequence."""
         self._assert_write_allowed(COMMAND_UUID)
 
         async with self.transaction():
             packet = build_stop_packet()
-
             await self.write(COMMAND_UUID, packet)
             await asyncio.sleep(STOP_DELAY)
             await self.write(COMMAND_UUID, packet)
@@ -166,7 +175,9 @@ class HunterTransactionEngine:
                 await self._connection.reconnect()
                 await asyncio.sleep(0.25)
 
-        raise TransactionError("BLE transaction failed.") from last_error
+        raise TransactionError(
+            "BLE transaction failed."
+        ) from last_error
 
     async def command(self, payload: bytes) -> None:
         await self.write(COMMAND_UUID, payload)
@@ -185,7 +196,9 @@ class HunterTransactionEngine:
                 last_error = err
                 await self._connection.reconnect()
 
-        raise TransactionError(f"Failed reading {uuid}") from last_error
+        raise TransactionError(
+            f"Failed reading {uuid}"
+        ) from last_error
 
     async def write_characteristic(
         self,
