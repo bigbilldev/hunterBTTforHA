@@ -1,10 +1,4 @@
-"""Low-level BLE client for Hunter BTT controllers.
-
-Writes automatically use the GATT write mode actually advertised by the
-characteristic. This is important for FF83: some controllers expose it as
-write-without-response, for which a response=True write is rejected as
-"Write not permitted".
-"""
+"""Low-level BLE client for Hunter BTT controllers."""
 
 from __future__ import annotations
 
@@ -31,7 +25,7 @@ COMMAND_UUID = "0000ff83-0000-1000-8000-00805f9b34fb"
 
 
 class HunterBLEClient:
-    """Low-level BLE I/O; no protocol/entity logic."""
+    """Low-level BLE I/O with explicit GATT capability checking."""
 
     def __init__(
         self,
@@ -65,7 +59,7 @@ class HunterBLEClient:
         }
 
     def characteristic_properties(self, uuid: str) -> set[str]:
-        """Return actual GATT properties for a characteristic."""
+        """Return the actual properties reported by the connected device."""
         target = str(uuid).strip().lower()
         if self._client is None:
             return set()
@@ -106,8 +100,13 @@ class HunterBLEClient:
                 self._address,
                 connectable=True,
             )
+            if inspect.isawaitable(device):
+                device = await device
+
             if device is None:
-                raise BleakError(f"Unable to locate BLE device {self._address}")
+                raise BleakError(
+                    f"Unable to locate BLE device {self._address}"
+                )
 
             try:
                 self._client = await establish_connection(
@@ -131,6 +130,11 @@ class HunterBLEClient:
             finally:
                 self._client = None
 
+    async def reconnect(self) -> None:
+        """Drop the old GATT session and establish a fresh one."""
+        await self.disconnect()
+        await self.connect()
+
     async def read(self, uuid: str) -> bytes:
         await self._ensure_connected()
         async with self._lock:
@@ -147,11 +151,12 @@ class HunterBLEClient:
         *,
         response: bool | None = None,
     ) -> None:
-        """Write using the characteristic's supported GATT write mode.
+        """Write only if the discovered GATT properties permit it.
 
-        response=None is the safe/default behavior. If the characteristic
-        supports only write-without-response, response=False is selected.
-        If it supports normal write, response=True is selected.
+        FF83 specifically prefers write-without-response when that mode is
+        advertised.  This prevents an acknowledged write from being sent
+        through the ESPHome/Bleak backend when the characteristic supports
+        only the no-response operation.
         """
         await self._ensure_connected()
 
@@ -161,21 +166,55 @@ class HunterBLEClient:
             target = str(uuid).strip().lower()
             properties = self.characteristic_properties(target)
 
-            if response is None:
-                if "write" in properties:
-                    response = True
-                elif "write-without-response" in properties:
-                    response = False
+            if not properties:
+                raise BleakError(
+                    f"Characteristic {uuid} was not discovered; "
+                    "write refused before calling Bleak."
+                )
+
+            writable = {"write", "write-without-response"} & properties
+            if not writable:
+                raise BleakError(
+                    f"Characteristic {uuid} is not writable; "
+                    f"properties={sorted(properties)}"
+                )
+
+            if target == COMMAND_UUID:
+                # FF83: prefer write-without-response whenever advertised.
+                # A caller cannot force response=True for FF83.
+                if "write-without-response" in properties:
+                    selected_response = False
+                elif "write" in properties:
+                    selected_response = True
                 else:
                     raise BleakError(
-                        f"Characteristic {uuid} is not writable; "
+                        f"FF83 is not writable; properties={sorted(properties)}"
+                    )
+            elif response is None:
+                selected_response = (
+                    False
+                    if "write-without-response" in properties
+                    else True
+                )
+            else:
+                if response and "write" not in properties:
+                    raise BleakError(
+                        f"Characteristic {uuid} does not support "
+                        "write-with-response; "
                         f"properties={sorted(properties)}"
                     )
+                if not response and "write-without-response" not in properties:
+                    raise BleakError(
+                        f"Characteristic {uuid} does not support "
+                        "write-without-response; "
+                        f"properties={sorted(properties)}"
+                    )
+                selected_response = response
 
             _LOGGER.debug(
                 "Hunter BLE write uuid=%s response=%s properties=%s payload=%s",
                 uuid,
-                response,
+                selected_response,
                 sorted(properties),
                 bytes(payload).hex(" "),
             )
@@ -184,7 +223,7 @@ class HunterBLEClient:
                 await self._client.write_gatt_char(
                     uuid,
                     payload,
-                    response=response,
+                    response=selected_response,
                 )
             except Exception as err:
                 raise BleakError(f"Write failed for {uuid}: {err}") from err
@@ -193,13 +232,13 @@ class HunterBLEClient:
         if not self.connected:
             await self.connect()
         assert self._client is not None
+
         if self._notification_callback is None:
             raise BleakError("No Hunter notification callback registered.")
 
         def _callback(characteristic, data) -> None:
             result = self._notification_callback(
-                str(characteristic.uuid),
-                bytes(data),
+                str(characteristic.uuid), bytes(data)
             )
             if inspect.isawaitable(result):
                 asyncio.create_task(result)
