@@ -85,7 +85,7 @@ class HunterBLEManager:
             await result
 
     async def connect(self) -> None:
-        """Connect, identify protocol family, then validate its service."""
+        """Connect, identify the protocol family, and validate its service."""
         if self.connected:
             return
 
@@ -95,8 +95,6 @@ class HunterBLEManager:
             services = set(self.connection.service_uuids)
             characteristics = set(self.connection.characteristic_uuids)
 
-            # Device name is the primary generation discriminator, matching
-            # the decompiled AisWrapper. GATT UUIDs validate the result.
             self._generation = detect_generation(
                 service_uuids=services,
                 device_name=self.name,
@@ -196,12 +194,9 @@ class HunterBLEManager:
             raise HunterManagerError("Runtime must be greater than zero.")
 
         if zone < 1 or zone > self._capabilities.zone_count:
-            raise HunterManagerError(
-                f"Zone {zone} is not supported."
-            )
+            raise HunterManagerError(f"Zone {zone} is not supported.")
 
         if self._generation is HunterGeneration.FIRST:
-            # Do not send FF83 to first-generation controllers.
             raise HunterManagerError(
                 "First-generation Hunter detected. "
                 "The FCC0/First protocol handler is not yet connected "

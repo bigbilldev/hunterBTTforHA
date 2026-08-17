@@ -8,6 +8,8 @@ from typing import Iterable
 
 
 class HunterGeneration(str, Enum):
+    """Hunter protocol generation."""
+
     FIRST = "first"
     SECOND = "second"
     UNKNOWN = "unknown"
@@ -15,6 +17,8 @@ class HunterGeneration(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class HunterCapabilities:
+    """Capabilities established from protocol identification."""
+
     generation: HunterGeneration
     zone_count: int
     service_uuid: str | None = None
@@ -22,6 +26,7 @@ class HunterCapabilities:
 
 FIRST_SERVICE_UUID = "0000fcc0-0000-1000-8000-00805f9b34fb"
 SECOND_SERVICE_UUID = "0000ff80-0000-1000-8000-00805f9b34fb"
+
 SECOND_ZONE1_CONFIG_UUID = "0000ff86-0000-1000-8000-00805f9b34fb"
 SECOND_ZONE2_CONFIG_UUID = "0000ff8b-0000-1000-8000-00805f9b34fb"
 
@@ -38,12 +43,15 @@ def detect_generation(
     device_name: str | None = None,
     characteristic_uuids: Iterable[object] | None = None,
 ) -> HunterGeneration:
-    """Use the proven Android device-name rule."""
+    """Determine generation using the proven device-name rule.
+
+    The decompiled Android implementation classifies devices whose name
+    starts with BTT as first generation. GATT UUIDs are then used as
+    validation evidence, not as a reason to reclassify a BTT device.
+    """
     services = _normalize(service_uuids)
     name = (device_name or "").strip().upper()
 
-    # AisWrapper classifies BTT-named devices as First before GATT
-    # protocol selection. FF80/FF83 must not override this.
     if name.startswith("BTT"):
         return HunterGeneration.FIRST
 
@@ -60,7 +68,7 @@ def validate_generation_services(
     generation: HunterGeneration,
     service_uuids: Iterable[object],
 ) -> bool:
-    """Validate the service expected by the selected protocol family."""
+    """Validate that the expected GATT service exists for a generation."""
     services = _normalize(service_uuids)
 
     if generation is HunterGeneration.FIRST:
@@ -76,23 +84,21 @@ def detect_zone_count(
     characteristic_uuids: Iterable[object],
     generation: HunterGeneration,
 ) -> int:
-    """Determine currently supportable zone count conservatively."""
+    """Determine the currently supportable zone count conservatively."""
     characteristics = _normalize(characteristic_uuids)
 
-    # The tested BTT100 is first-generation and one-zone. Do not infer
-    # another zone merely from the presence of FF8B or other FFxx UUIDs.
+    # BTT100 is confirmed first-generation and single-zone.
+    # Do not infer additional zones from incidental FFxx UUIDs.
     if generation is HunterGeneration.FIRST:
         return 1
 
-    # Second_83 explicitly models both zones in the reference protocol.
-    # Require both known zone configuration characteristics before exposing
-    # two zones; otherwise expose only the proven zone 1.
     if generation is HunterGeneration.SECOND:
         if (
             SECOND_ZONE1_CONFIG_UUID in characteristics
             and SECOND_ZONE2_CONFIG_UUID in characteristics
         ):
             return 2
+
         if SECOND_ZONE1_CONFIG_UUID in characteristics:
             return 1
 
