@@ -1,4 +1,4 @@
-"""Serialized Hunter BTT BLE transaction engine."""
+"""Hunter BTT transaction engine with a hard FF83 safety interlock."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class TransactionTimeout(TransactionError):
 
 
 class HunterTransactionEngine:
-    """Execute serialized BLE transactions with an FF83 safety interlock."""
+    """Serialize BLE transactions and absolutely guard FF83 writes."""
 
     def __init__(self, connection) -> None:
         self._connection = connection
@@ -49,17 +49,17 @@ class HunterTransactionEngine:
         return self._ff83_enabled
 
     def set_ff83_enabled(self, enabled: bool) -> None:
-        """Explicitly authorize FF83 only for a validated device."""
+        """Authorize FF83 only when the manager has proven it is valid."""
         self._ff83_enabled = bool(enabled)
         _LOGGER.info("FF83 transaction authorization=%s", self._ff83_enabled)
 
     def _assert_write_allowed(self, uuid: str) -> None:
-        """Hard safety boundary: FF83 is never written unless authorized."""
+        """Hard boundary: an unauthorized FF83 write never reaches BLE."""
         if str(uuid).strip().lower() != COMMAND_UUID:
             return
         if not self._ff83_enabled:
             raise TransactionError(
-                "FF83 write blocked by protocol safety interlock; "
+                "FF83 write blocked by transaction safety interlock; "
                 "no BLE write was attempted."
             )
 
@@ -93,7 +93,7 @@ class HunterTransactionEngine:
     ) -> None:
         self._assert_write_allowed(uuid)
 
-        async def _write():
+        async def _write() -> None:
             await self._connection.client.write(
                 uuid, payload, response=response
             )
@@ -101,38 +101,43 @@ class HunterTransactionEngine:
         await self._retry(_write)
 
     async def start_zone(self, zone: int, runtime_seconds: int) -> None:
-        """Execute the proven second-generation FF83 start sequence."""
-        if not self._ff83_enabled:
-            raise TransactionError(
-                "FF83 start blocked: transaction authorization is disabled."
-            )
+        """Execute the second-generation FF83 start sequence."""
+        self._assert_write_allowed(COMMAND_UUID)
 
         async with self.transaction():
-            await self.write(COMMAND_UUID, build_prepare_packet(zone))
+            await self.write(
+                COMMAND_UUID,
+                build_prepare_packet(zone),
+            )
             await asyncio.sleep(PREPARE_DELAY)
+
             await self.write(
                 COMMAND_UUID,
                 build_duration_packet(runtime_seconds),
             )
             await asyncio.sleep(ARM_DELAY)
-            await self.write(COMMAND_UUID, build_arm_packet(zone))
+
+            await self.write(
+                COMMAND_UUID,
+                build_arm_packet(zone),
+            )
+
             try:
                 await self.wait_for_ack()
             except TransactionTimeout:
                 _LOGGER.debug("No acknowledgement received after start.")
 
     async def stop(self) -> None:
-        """Execute the proven second-generation FF83 stop sequence."""
-        if not self._ff83_enabled:
-            raise TransactionError(
-                "FF83 stop blocked: transaction authorization is disabled."
-            )
+        """Execute the second-generation FF83 stop sequence."""
+        self._assert_write_allowed(COMMAND_UUID)
 
         async with self.transaction():
             packet = build_stop_packet()
+
             await self.write(COMMAND_UUID, packet)
             await asyncio.sleep(STOP_DELAY)
             await self.write(COMMAND_UUID, packet)
+
             try:
                 await self.wait_for_ack()
             except TransactionTimeout:
@@ -143,11 +148,13 @@ class HunterTransactionEngine:
         func: Callable[[], Awaitable[None]],
     ) -> None:
         last_error: Exception | None = None
+
         for attempt in range(MAX_RETRIES + 1):
             try:
                 await self._connection.ensure_connection()
                 await func()
                 return
+
             except BleakError as err:
                 last_error = err
                 _LOGGER.warning(
@@ -165,10 +172,11 @@ class HunterTransactionEngine:
         await self.write(COMMAND_UUID, payload)
 
     async def read(self, uuid: str) -> bytes:
-        async def _read():
+        async def _read() -> bytes:
             return await self._connection.client.read(uuid)
 
-        last_error = None
+        last_error: Exception | None = None
+
         for _ in range(MAX_RETRIES + 1):
             try:
                 await self._connection.ensure_connection()
