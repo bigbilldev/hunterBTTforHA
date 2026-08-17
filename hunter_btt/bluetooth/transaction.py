@@ -1,304 +1,299 @@
 """Hunter BTT transaction engine.
 
-Second-generation START/STOP follows the decompiled Android model for
-Second_83_Protocol.  FF83 is a single 12-byte state/command structure;
-the older prepare/duration/arm sequence is NOT used here.
+Second-generation START/STOP path based on the Android Second_83 protocol.
 
-The Android wrapper queues a normal BluetoothGatt.writeCharacteristic()
-operation.  Therefore the caller uses write-with-response for FF83.
+Important:
+- Do NOT read FF83 before START/STOP.
+- FF83 is written as a normal acknowledged GATT characteristic.
+- The Android Second_83 serializer is a 12-byte structure in this order:
+  enabled, suspendWatering, zone1Enabled, zone1Mode, zone1EnableManual,
+  zone2Enabled, zone2Mode, zone2EnableManual, runAllHH, runAllMM,
+  runAllSS, specialSetting.
+- This module therefore sends a complete 12-byte FF83 packet directly.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager
 from typing import Awaitable, Callable
 
 from bleak.exc import BleakError
 
-from ..protocol.generation import HunterGeneration
-from ..protocol.uuids import COMMAND_UUID
+from ..protocol.generation import COMMAND_UUID
+from ..protocol.uuids import FF82_UUID, FF83_UUID
 
 _LOGGER = logging.getLogger(__name__)
 
-FF83_UUID = COMMAND_UUID
+MAX_RETRIES = 3
+RETRY_DELAY = 0.25
 STOP_DELAY = 0.20
-MAX_RETRIES = 2
-MAX_RUNTIME = 3600
+ACK_TIMEOUT = 8.0
 
 
 class TransactionError(RuntimeError):
-    """A Hunter BLE transaction failed."""
+    """Hunter BLE transaction failure."""
 
 
 class TransactionTimeout(TransactionError):
-    """A Hunter BLE transaction timed out."""
+    """Hunter BLE acknowledgement timeout."""
 
 
-def _hms(seconds: int) -> tuple[int, int, int]:
-    hours, remainder = divmod(seconds, 3600)
+def _u8(value: int) -> int:
+    return max(0, min(255, int(value)))
+
+
+def build_second_83_start_packet(zone: int, runtime_seconds: int) -> bytes:
+    """Build the Android Second_83 12-byte START structure.
+
+    The Android class serializes fields in exactly this order. For manual
+    watering, the controller is enabled, watering is not suspended, the
+    selected zone is enabled/manual, and run-all time carries the requested
+    runtime.
+    """
+    if zone not in (1, 2):
+        raise ValueError(f"Unsupported Hunter zone: {zone}")
+
+    runtime = max(0, int(runtime_seconds))
+    hours, remainder = divmod(runtime, 3600)
     minutes, seconds = divmod(remainder, 60)
-    return hours, minutes, seconds
 
+    if hours > 255:
+        raise ValueError("Hunter runtime exceeds 255 hours")
 
-def _encode_83(
-    *,
-    enabled: bool,
-    suspend: int,
-    zone1_enabled: int,
-    zone1_mode: int,
-    zone1_manual: bool,
-    zone2_enabled: int,
-    zone2_mode: int,
-    zone2_manual: bool,
-    run_seconds: int,
-    special: int,
-) -> bytes:
-    """Serialize the exact Second_83_Protocol.a() field order."""
-    hh, mm, ss = _hms(run_seconds)
+    zone1_enabled = 1 if zone == 1 else 0
+    zone2_enabled = 1 if zone == 2 else 0
+
+    # Mode 1 is the manual/timer mode used by the Android protocol model.
+    zone1_mode = 1 if zone == 1 else 0
+    zone2_mode = 1 if zone == 2 else 0
+
     return bytes(
         (
-            1 if enabled else 0,
-            suspend & 0xFF,
-            zone1_enabled & 0xFF,
-            zone1_mode & 0xFF,
-            1 if zone1_manual else 0,
-            zone2_enabled & 0xFF,
-            zone2_mode & 0xFF,
-            1 if zone2_manual else 0,
-            hh,
-            mm,
-            ss,
-            special & 0xFF,
+            1,                  # enabled
+            0,                  # suspendWatering
+            zone1_enabled,      # zone1Enabled
+            zone1_mode,         # zone1Mode
+            zone1_enabled,      # zone1EnableManual
+            zone2_enabled,      # zone2Enabled
+            zone2_mode,         # zone2Mode
+            zone2_enabled,      # zone2EnableManual
+            _u8(hours),         # runAllHH
+            _u8(minutes),       # runAllMM
+            _u8(seconds),       # runAllSS
+            0,                  # specialSetting
         )
     )
 
 
-def _mutate_start(current: bytes, zone: int, runtime: int) -> bytes:
-    """Mutate an existing FF83 state rather than inventing unrelated fields."""
-    if len(current) != 12:
-        raise TransactionError(
-            f"FF83 returned {len(current)} bytes; expected 12."
+def build_second_83_stop_packet() -> bytes:
+    """Build the Android Second_83 STOP structure."""
+    return bytes(
+        (
+            1,  # enabled
+            0,  # suspendWatering
+            0,  # zone1Enabled
+            0,  # zone1Mode
+            0,  # zone1EnableManual
+            0,  # zone2Enabled
+            0,  # zone2Mode
+            0,  # zone2EnableManual
+            0,  # runAllHH
+            0,  # runAllMM
+            0,  # runAllSS
+            0,  # specialSetting
         )
-    if zone not in (1, 2):
-        raise TransactionError(f"Unsupported zone {zone}.")
-    if not 0 < runtime <= MAX_RUNTIME:
-        raise TransactionError(
-            f"Runtime must be between 1 and {MAX_RUNTIME} seconds."
-        )
-
-    # Second_83_Protocol field order from the Android source:
-    # 0 enabled
-    # 1 suspendWatering
-    # 2 zone1Enabled
-    # 3 zone1Mode
-    # 4 zone1EnableManual
-    # 5 zone2Enabled
-    # 6 zone2Mode
-    # 7 zone2EnableManual
-    # 8..10 runAllHH/MM/SS
-    # 11 specialSetting
-    data = bytearray(current)
-    data[0] = 1
-
-    if zone == 1:
-        data[2] = 1
-        data[3] = 2
-        data[4] = 1
-        data[7] = 0
-    else:
-        data[5] = 1
-        data[6] = 2
-        data[7] = 1
-        data[4] = 0
-
-    hh, mm, ss = _hms(runtime)
-    data[8:11] = bytes((hh, mm, ss))
-    return bytes(data)
-
-
-def _mutate_stop(current: bytes) -> bytes:
-    """Create the Android Second_83 representation of a stopped controller."""
-    if len(current) != 12:
-        raise TransactionError(
-            f"FF83 returned {len(current)} bytes; expected 12."
-        )
-
-    data = bytearray(current)
-    data[0] = 0
-    data[4] = 0
-    data[7] = 0
-    data[8:11] = b"\x00\x00\x00"
-    return bytes(data)
+    )
 
 
 class HunterTransactionEngine:
-    """Serialize Hunter protocol operations."""
+    """Serialize Hunter BLE commands."""
 
     def __init__(self, connection) -> None:
         self._connection = connection
         self._lock = asyncio.Lock()
         self._ack_event = asyncio.Event()
         self._last_ack: bytes | None = None
-        self._generation = HunterGeneration.UNKNOWN
-
-    @property
-    def generation(self) -> HunterGeneration:
-        return self._generation
-
-    def set_generation(self, generation) -> None:
-        value = getattr(generation, "value", generation)
-        try:
-            self._generation = HunterGeneration(
-                str(value).strip().lower()
-            )
-        except ValueError:
-            self._generation = HunterGeneration.UNKNOWN
-
-    def set_ff83_enabled(self, enabled: bool) -> None:
-        self.set_generation(
-            HunterGeneration.SECOND if enabled else HunterGeneration.FIRST
-        )
 
     async def notification(self, uuid: str, payload: bytes) -> None:
-        self._last_ack = bytes(payload)
-        self._ack_event.set()
+        """Accept controller notifications for command confirmation."""
+        if str(uuid).strip().lower() == str(FF82_UUID).strip().lower():
+            self._last_ack = bytes(payload)
+            self._ack_event.set()
 
-    @asynccontextmanager
-    async def transaction(self):
-        async with self._lock:
-            self._ack_event.clear()
-            self._last_ack = None
-            yield
-
-    async def read(self, uuid: str) -> bytes:
-        async def operation() -> bytes:
-            await self._connection.ensure_connection()
-            return await self._connection.client.read(uuid)
-
-        last_error = None
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                return await operation()
-            except BleakError as err:
-                last_error = err
-                if attempt < MAX_RETRIES:
-                    await self._connection.reconnect()
-                    await asyncio.sleep(0.25)
-        raise TransactionError(f"Failed reading {uuid}") from last_error
-
-    async def write(
-        self,
-        uuid: str,
-        payload: bytes,
-        *,
-        response: bool | None = None,
-    ) -> None:
-        if (
-            str(uuid).strip().lower() == FF83_UUID.lower()
-            and self._generation is not HunterGeneration.SECOND
-        ):
-            raise TransactionError(
-                "FF83 write blocked: controller is not second-generation."
-            )
-
-        async def operation() -> None:
-            await self._connection.ensure_connection()
-            # Android BleWrapper.commitTransactionToBT() calls
-            # BluetoothGatt.writeCharacteristic(), i.e. the normal
-            # acknowledged write operation.
-            await self._connection.client.write(
-                uuid,
-                payload,
-                response=True if uuid.lower() == FF83_UUID.lower() else response,
-            )
-
-        await self._retry(operation)
-
-    async def start_zone(self, zone: int, runtime_seconds: int) -> None:
-        if self._generation is not HunterGeneration.SECOND:
-            raise TransactionError(
-                "START currently requires the second-generation protocol."
-            )
-
-        async with self.transaction():
-            # Android Second_83_Protocol is a complete 12-byte structure.
-            # Read the current state first, mutate only command-relevant
-            # fields, then perform one normal GATT write.
-            current = await self.read(FF83_UUID)
-            payload = _mutate_start(current, zone, runtime_seconds)
-
-            _LOGGER.info(
-                "SECOND START: FF83 read=%s write=%s",
-                current.hex(" "),
-                payload.hex(" "),
-            )
-            await self.write(FF83_UUID, payload, response=True)
-
-    async def stop(self) -> None:
-        if self._generation is not HunterGeneration.SECOND:
-            raise TransactionError(
-                "STOP currently requires the second-generation protocol."
-            )
-
-        async with self.transaction():
-            current = await self.read(FF83_UUID)
-            payload = _mutate_stop(current)
-
-            _LOGGER.info(
-                "SECOND STOP: FF83 read=%s write=%s",
-                current.hex(" "),
-                payload.hex(" "),
-            )
-            await self.write(FF83_UUID, payload, response=True)
-
-    async def wait_for_ack(self, timeout: float = 5.0) -> bytes:
-        try:
-            await asyncio.wait_for(self._ack_event.wait(), timeout)
-        except TimeoutError as exc:
-            raise TransactionTimeout(
-                "Timed out waiting for Hunter acknowledgement."
-            ) from exc
-        return self._last_ack or b""
-
-    async def command(self, payload: bytes) -> None:
-        if self._generation is not HunterGeneration.SECOND:
-            raise TransactionError(
-                "Generic FF83 command blocked for non-second-generation Hunter."
-            )
+    async def _write_ff83(self, payload: bytes) -> None:
         if len(payload) != 12:
-            raise TransactionError("Second-generation FF83 commands must be 12 bytes.")
-        await self.write(FF83_UUID, payload, response=True)
+            raise TransactionError(
+                f"FF83 requires 12 bytes; got {len(payload)}"
+            )
 
-    async def write_characteristic(self, uuid: str, payload: bytes) -> None:
-        await self.write(uuid, payload)
+        _LOGGER.debug(
+            "Hunter FF83 write: %s",
+            payload.hex(" "),
+        )
 
-    async def execute_sequence(
-        self,
-        *operations: Callable[[], Awaitable[None]],
-    ) -> None:
-        async with self.transaction():
-            for operation in operations:
-                await operation()
+        await self._connection.ensure_connection()
 
-    async def _retry(self, func: Callable[[], Awaitable[None]]) -> None:
+        # Explicitly use acknowledged/normal GATT write, matching Android's
+        # BluetoothGatt.writeCharacteristic() path.
+        await self._connection.client.write(
+            FF83_UUID,
+            payload,
+            response=True,
+        )
+
+    async def _write_with_retry(self, payload: bytes) -> None:
         last_error: Exception | None = None
 
-        for attempt in range(MAX_RETRIES + 1):
+        for attempt in range(1, MAX_RETRIES + 1):
             try:
-                await func()
+                await self._write_ff83(payload)
                 return
-            except BleakError as err:
+            except (BleakError, TransactionError) as err:
                 last_error = err
                 _LOGGER.warning(
-                    "BLE transaction failed (%s/%s): %s",
-                    attempt + 1,
-                    MAX_RETRIES + 1,
+                    "Hunter FF83 write failed (%s/%s): %s",
+                    attempt,
+                    MAX_RETRIES,
                     err,
                 )
                 if attempt < MAX_RETRIES:
-                    await self._connection.reconnect()
-                    await asyncio.sleep(0.25)
+                    # Reconnect only AFTER an actual write failure. Never
+                    # reconnect merely because FF83 cannot/should not be read.
+                    try:
+                        await self._connection.reconnect()
+                    except Exception as reconnect_err:
+                        _LOGGER.debug(
+                            "Hunter reconnect after FF83 failure failed: %s",
+                            reconnect_err,
+                        )
+                    await asyncio.sleep(RETRY_DELAY)
 
-        raise TransactionError("BLE transaction failed.") from last_error
+        raise TransactionError("Hunter FF83 write failed") from last_error
+
+    async def _wait_for_ack(self) -> bytes:
+        try:
+            await asyncio.wait_for(
+                self._ack_event.wait(),
+                timeout=ACK_TIMEOUT,
+            )
+        except TimeoutError as err:
+            raise TransactionTimeout(
+                "Timed out waiting for Hunter FF82 acknowledgement"
+            ) from err
+
+        return self._last_ack or b""
+
+    async def start_zone(self, zone: int, runtime_seconds: int) -> None:
+        """Start a zone without performing an FF83 read."""
+        async with self._lock:
+            payload = build_second_83_start_packet(
+                zone,
+                runtime_seconds,
+            )
+
+            self._ack_event.clear()
+            self._last_ack = None
+
+            _LOGGER.info(
+                "Hunter START: zone=%s runtime=%ss FF83=%s",
+                zone,
+                runtime_seconds,
+                payload.hex(" "),
+            )
+
+            await self._write_with_retry(payload)
+
+            try:
+                ack = await self._wait_for_ack()
+                _LOGGER.info(
+                    "Hunter START acknowledgement FF82=%s",
+                    ack.hex(" ") if ack else "<empty>",
+                )
+            except TransactionTimeout:
+                # The GATT write itself succeeded. Do not turn a missing
+                # notification into a second command or an FF83 read.
+                _LOGGER.warning(
+                    "Hunter START write succeeded but no FF82 acknowledgement "
+                    "arrived within %ss",
+                    ACK_TIMEOUT,
+                )
+
+    async def stop(self) -> None:
+        """Stop watering using the Second_83 FF83 structure."""
+        async with self._lock:
+            payload = build_second_83_stop_packet()
+
+            self._ack_event.clear()
+            self._last_ack = None
+
+            _LOGGER.info(
+                "Hunter STOP: FF83=%s",
+                payload.hex(" "),
+            )
+
+            await self._write_with_retry(payload)
+            await asyncio.sleep(STOP_DELAY)
+
+            # Android-style command path may require the stop command to be
+            # issued twice. Do not read FF83 between the two writes.
+            await self._write_with_retry(payload)
+
+            try:
+                ack = await self._wait_for_ack()
+                _LOGGER.info(
+                    "Hunter STOP acknowledgement FF82=%s",
+                    ack.hex(" ") if ack else "<empty>",
+                )
+            except TransactionTimeout:
+                _LOGGER.warning(
+                    "Hunter STOP writes succeeded but no FF82 acknowledgement "
+                    "arrived within %ss",
+                    ACK_TIMEOUT,
+                )
+
+    async def write(self, uuid: str, payload: bytes, *, response: bool = True) -> None:
+        """Compatibility method for callers that write characteristics."""
+        if str(uuid).strip().lower() == str(FF83_UUID).strip().lower():
+            if not response:
+                raise TransactionError(
+                    "FF83 must use acknowledged GATT write"
+                )
+            if len(payload) != 12:
+                raise TransactionError(
+                    f"FF83 requires 12 bytes; got {len(payload)}"
+                )
+            async with self._lock:
+                await self._write_with_retry(bytes(payload))
+            return
+
+        await self._connection.ensure_connection()
+        await self._connection.client.write(
+            uuid,
+            payload,
+            response=response,
+        )
+
+    async def read(self, uuid: str) -> bytes:
+        """Read non-command characteristics.
+
+        FF83 is deliberately not read by START/STOP.
+        """
+        await self._connection.ensure_connection()
+        return await self._connection.client.read(uuid)
+
+    async def write_characteristic(
+        self,
+        uuid: str,
+        payload: bytes,
+    ) -> None:
+        await self.write(uuid, payload, response=True)
+
+    async def command(self, payload: bytes) -> None:
+        if len(payload) != 12:
+            raise TransactionError("FF83 command must contain 12 bytes")
+        await self.write(FF83_UUID, payload, response=True)
+
+    @property
+    def busy(self) -> bool:
+        return self._lock.locked()
