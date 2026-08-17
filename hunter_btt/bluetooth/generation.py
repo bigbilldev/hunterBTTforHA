@@ -5,6 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+# Public UUID constants retained here for compatibility with config_flow and
+# manager.py.  Protocol UUIDs are normalized to lowercase.
+FIRST_SERVICE_UUID = "0000fcc0-0000-1000-8000-00805f9b34fb"
+SECOND_SERVICE_UUID = "0000ff80-0000-1000-8000-00805f9b34fb"
+COMMAND_UUID = "0000ff83-0000-1000-8000-00805f9b34fb"
+FCC0_SERVICE_UUID = FIRST_SERVICE_UUID
+
 
 class HunterGeneration(str, Enum):
     """Hunter BLE protocol generation."""
@@ -16,71 +23,67 @@ class HunterGeneration(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class HunterCapabilities:
+    """Capabilities discovered from the controller."""
+
     generation: HunterGeneration
     zone_count: int
     service_uuid: str | None = None
 
 
-FIRST_SERVICE_UUID = "0000fcc0-0000-1000-8000-00805f9b34fb"
-SECOND_SERVICE_UUID = "0000ff80-0000-1000-8000-00805f9b34fb"
-COMMAND_UUID = "0000ff83-0000-1000-8000-00805f9b34fb"
-
-
-def _android_generation_from_name(device_name: str | None) -> HunterGeneration:
-    """Mirror AisWrapper.connect(): startsWith('BTT') => First."""
-    name = (device_name or "").strip().upper()
-    if name.startswith("BTT"):
-        return HunterGeneration.FIRST
-    return HunterGeneration.SECOND
-
-
-def normalize_android_device_name(device_name: str | None) -> str:
-    """Recover the advertised BTT name when HA prepends its friendly label.
-
-    AisWrapper receives a BTT-prefixed device identifier. HA can expose the
-    same device as 'Hunter BTT CBBB4'. This normalization does not change the
-    Android rule; it only removes the HA 'Hunter ' display prefix.
-    """
+def _normalize_name(device_name: str | None) -> str:
     name = (device_name or "").strip()
+    # HA commonly presents this device as "Hunter BTT CBBB4", while the
+    # Android wrapper receives the BTT-prefixed local name.
     if name.upper().startswith("HUNTER BTT"):
         return name[7:].lstrip()
     return name
 
 
 def detect_generation(
-    service_uuids: set[str],
+    service_uuids: set[str] | None = None,
     device_name: str | None = None,
     characteristic_uuids: set[str] | None = None,
 ) -> HunterGeneration:
-    """Use the Android name rule first, with GATT only as a consistency check."""
-    normalized_name = normalize_android_device_name(device_name)
+    """Mirror AisWrapper generation selection.
 
-    # This is the manufacturer's application rule:
-    # BTT* -> First; otherwise -> Second.
-    generation = _android_generation_from_name(normalized_name)
+    Android's rule is:
+        device name starts with "BTT" -> First
+        otherwise -> Second
 
-    services = {str(uuid).strip().lower() for uuid in service_uuids}
+    GATT is only a fallback when no usable device name is available.
+    """
+    name = _normalize_name(device_name)
 
-    # If no usable BTT name is available, use GATT as a fallback only.
-    if not normalized_name:
-        if FIRST_SERVICE_UUID in services:
-            return HunterGeneration.FIRST
-        if SECOND_SERVICE_UUID in services:
-            return HunterGeneration.SECOND
-        return HunterGeneration.UNKNOWN
+    if name.upper().startswith("BTT"):
+        return HunterGeneration.FIRST
 
-    return generation
+    if name:
+        return HunterGeneration.SECOND
+
+    services = {
+        str(uuid).strip().lower()
+        for uuid in (service_uuids or set())
+    }
+    if FIRST_SERVICE_UUID in services:
+        return HunterGeneration.FIRST
+    if SECOND_SERVICE_UUID in services:
+        return HunterGeneration.SECOND
+
+    return HunterGeneration.UNKNOWN
 
 
 def detect_zone_count(
-    characteristic_uuids: set[str],
+    characteristic_uuids: set[str] | None,
     generation: HunterGeneration,
 ) -> int:
-    """Determine zone count from generation-specific evidence."""
-    chars = {str(uuid).strip().lower() for uuid in characteristic_uuids}
+    """Determine currently proven zone count."""
+    chars = {
+        str(uuid).strip().lower()
+        for uuid in (characteristic_uuids or set())
+    }
 
     if generation is HunterGeneration.FIRST:
-        # BTT100 is the confirmed first-generation test device and is one-zone.
+        # Confirmed BTT100 test device.
         return 1
 
     if generation is HunterGeneration.SECOND:
@@ -92,3 +95,31 @@ def detect_zone_count(
             return 1
 
     return 0
+
+
+def validate_generation_services(
+    generation: HunterGeneration,
+    service_uuids: set[str] | None,
+) -> bool:
+    """Compatibility validator for config flow.
+
+    This validates the expected service family after generation has been
+    selected; it does not change the Android name-based generation decision.
+    """
+    services = {
+        str(uuid).strip().lower()
+        for uuid in (service_uuids or set())
+    }
+
+    if generation is HunterGeneration.FIRST:
+        return FIRST_SERVICE_UUID in services or SECOND_SERVICE_UUID in services
+
+    if generation is HunterGeneration.SECOND:
+        return SECOND_SERVICE_UUID in services
+
+    return False
+
+
+def normalize_android_device_name(device_name: str | None) -> str:
+    """Return the BTT-prefixed name used by the Android generation rule."""
+    return _normalize_name(device_name)
