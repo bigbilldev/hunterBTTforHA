@@ -1,4 +1,4 @@
-"""High-level Hunter BTT BLE manager."""
+"""Hunter BTT BLE manager using Android reference identification."""
 
 from __future__ import annotations
 
@@ -10,10 +10,14 @@ from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
 from homeassistant.core import HomeAssistant
 
 from ..protocol.generation import (
+    COMMAND_UUID,
+    FCC0_SERVICE_UUID,
+    SECOND_SERVICE_UUID,
     HunterCapabilities,
     HunterGeneration,
     detect_generation,
     detect_zone_count,
+    normalize_android_device_name,
 )
 from .client import HunterBLEClient
 from .connection import HunterConnection
@@ -21,17 +25,13 @@ from .transaction import HunterTransactionEngine
 
 _LOGGER = logging.getLogger(__name__)
 
-COMMAND_UUID = "0000ff83-0000-1000-8000-00805f9b34fb"
-FF80_SERVICE_UUID = "0000ff80-0000-1000-8000-00805f9b34fb"
-FCC0_SERVICE_UUID = "0000fcc0-0000-1000-8000-00805f9b34fb"
-
 
 class HunterManagerError(Exception):
     """Raised for Hunter manager errors."""
 
 
 class HunterBLEManager:
-    """Manage connection and protocol selection."""
+    """Manage connection and select the same generation as Android."""
 
     def __init__(
         self,
@@ -40,9 +40,6 @@ class HunterBLEManager:
     ) -> None:
         self._hass = hass
         self.address = discovery_info.address
-
-        # Keep every useful HA name representation.  Some Bluetooth
-        # backends populate name while others expose a local_name.
         self.name = (
             getattr(discovery_info, "name", None)
             or getattr(discovery_info, "service_name", None)
@@ -58,8 +55,8 @@ class HunterBLEManager:
             generation=HunterGeneration.UNKNOWN,
             zone_count=0,
         )
-        self.connected = False
         self._ff83_authorized = False
+        self.connected = False
         self._state_callback = None
 
         self.state: dict[str, Any] = {
@@ -93,26 +90,25 @@ class HunterBLEManager:
             await result
 
     def _ff83_is_writable(self) -> bool:
-        """Inspect GATT properties, but never use them to bless First gen."""
         bleak_client = getattr(self.client, "_client", None)
         if bleak_client is None:
             return False
-
         try:
             for service in bleak_client.services:
                 for characteristic in service.characteristics:
-                    if str(characteristic.uuid).lower() != COMMAND_UUID:
-                        continue
-                    properties = {
-                        str(prop).strip().lower()
-                        for prop in characteristic.properties
-                    }
-                    return bool(
-                        {"write", "write-without-response"} & properties
-                    )
+                    if str(characteristic.uuid).lower() == COMMAND_UUID:
+                        properties = {
+                            str(prop).strip().lower()
+                            for prop in characteristic.properties
+                        }
+                        return bool(
+                            {"write", "write-without-response"} & properties
+                        )
         except Exception:
-            _LOGGER.debug("Unable to inspect FF83 properties", exc_info=True)
-
+            _LOGGER.debug(
+                "Unable to inspect FF83 properties",
+                exc_info=True,
+            )
         return False
 
     async def connect(self) -> None:
@@ -122,8 +118,16 @@ class HunterBLEManager:
         try:
             await self.connection.connect()
 
-            services = set(self.connection.service_uuids)
-            characteristics = set(self.connection.characteristic_uuids)
+            services = {
+                str(uuid).strip().lower()
+                for uuid in self.connection.service_uuids
+            }
+            characteristics = {
+                str(uuid).strip().lower()
+                for uuid in self.connection.characteristic_uuids
+            }
+
+            normalized_name = normalize_android_device_name(self.name)
 
             self._generation = detect_generation(
                 service_uuids=services,
@@ -131,69 +135,44 @@ class HunterBLEManager:
                 characteristic_uuids=characteristics,
             )
 
-            name_upper = self.name.strip().upper()
-            btt_name = "BTT" in name_upper
-            ff83_writable = self._ff83_is_writable()
-
             _LOGGER.info(
-                "Hunter identification: name=%r btt_name=%s generation=%s "
-                "FF83_properties=%s FF83_writable=%s",
+                "Hunter Android identification: HA_name=%r "
+                "normalized_name=%r generation=%s",
                 self.name,
-                btt_name,
+                normalized_name,
                 self._generation.value,
-                sorted(
-                    getattr(
-                        self.client,
-                        "characteristic_properties",
-                        lambda _uuid: set(),
-                    )(COMMAND_UUID)
-                ),
-                ff83_writable,
             )
 
             if self._generation is HunterGeneration.UNKNOWN:
-                await self.connection.disconnect()
                 raise HunterManagerError(
-                    "Unable to identify Hunter BLE protocol generation."
+                    "Unable to identify Hunter protocol generation."
                 )
 
-            # BTT-named devices are First generation. This is an absolute
-            # safety rule: FF83 is NEVER authorized for them.
-            if btt_name:
-                self._generation = HunterGeneration.FIRST
-
-            if self._generation is HunterGeneration.FIRST:
-                zone_count = 1
-                service_uuid = (
-                    FF80_SERVICE_UUID
-                    if FF80_SERVICE_UUID in services
-                    else FCC0_SERVICE_UUID
-                )
-                self._ff83_authorized = False
-            else:
-                if FF80_SERVICE_UUID not in services:
-                    await self.connection.disconnect()
-                    raise HunterManagerError(
-                        "Second-generation Hunter requires FF80 service."
-                    )
-
-                zone_count = detect_zone_count(
-                    characteristics,
-                    self._generation,
-                )
-                service_uuid = FF80_SERVICE_UUID
-
-                # Only a non-BTT second-generation device with a genuinely
-                # writable FF83 can use the existing FF83 transaction engine.
-                self._ff83_authorized = ff83_writable
-
+            zone_count = detect_zone_count(
+                characteristics,
+                self._generation,
+            )
             if zone_count < 1:
-                await self.connection.disconnect()
                 raise HunterManagerError(
-                    "Hunter controller has no proven supported zones."
+                    f"No supported zones found for {self._generation.value} "
+                    "generation."
                 )
 
+            ff83_writable = self._ff83_is_writable()
+
+            # First generation NEVER uses FF83. Second generation may use it
+            # only when the characteristic actually advertises write support.
+            self._ff83_authorized = (
+                self._generation is HunterGeneration.SECOND
+                and ff83_writable
+            )
             self.transaction.set_ff83_enabled(self._ff83_authorized)
+
+            service_uuid = (
+                SECOND_SERVICE_UUID
+                if self._generation is HunterGeneration.SECOND
+                else FCC0_SERVICE_UUID
+            )
 
             self._capabilities = HunterCapabilities(
                 generation=self._generation,
@@ -203,10 +182,8 @@ class HunterBLEManager:
             self.connected = True
 
             _LOGGER.info(
-                "Hunter connected: address=%s name=%r generation=%s zones=%d "
+                "Hunter connected: generation=%s zones=%d "
                 "FF83_authorized=%s",
-                self.address,
-                self.name,
                 self._generation.value,
                 zone_count,
                 self._ff83_authorized,
@@ -214,6 +191,10 @@ class HunterBLEManager:
 
         except HunterManagerError:
             self.connected = False
+            try:
+                await self.connection.disconnect()
+            except Exception:
+                pass
             raise
         except Exception as err:
             self.connected = False
@@ -245,21 +226,21 @@ class HunterBLEManager:
 
         if runtime <= 0:
             raise HunterManagerError("Runtime must be greater than zero.")
-
         if zone < 1 or zone > self._capabilities.zone_count:
             raise HunterManagerError(f"Zone {zone} is not supported.")
 
         if self._generation is HunterGeneration.FIRST:
+            # Do not call the second-generation transaction engine.
             raise HunterManagerError(
-                "First-generation Hunter detected. "
-                "FF83 was NOT written. "
-                "The First-generation protocol handler is required."
+                "First-generation Hunter selected. "
+                "FF83 was not written. First-generation protocol "
+                "implementation is required for START."
             )
 
         if not self._ff83_authorized:
             raise HunterManagerError(
-                "FF83 is not authorized for this controller. "
-                "No BLE write was attempted."
+                "FF83 is not authorized for this second-generation "
+                "controller. No BLE write was attempted."
             )
 
         await self.transaction.start_zone(zone, runtime)
@@ -269,15 +250,14 @@ class HunterBLEManager:
 
         if self._generation is HunterGeneration.FIRST:
             raise HunterManagerError(
-                "First-generation Hunter detected. "
-                "FF83 was NOT written. "
-                "The First-generation protocol handler is required."
+                "First-generation Hunter selected. "
+                "FF83 was not written. First-generation protocol "
+                "implementation is required for STOP."
             )
 
         if not self._ff83_authorized:
             raise HunterManagerError(
-                "FF83 is not authorized for this controller. "
-                "No BLE write was attempted."
+                "FF83 is not authorized. No BLE write was attempted."
             )
 
         await self.transaction.stop()
