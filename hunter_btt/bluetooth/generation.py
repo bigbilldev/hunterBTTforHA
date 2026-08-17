@@ -1,107 +1,98 @@
-"""Hunter BTT protocol generation detection."""
+"""Hunter BTT generation detection and capabilities."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from collections.abc import Iterable
 
 
 class HunterGeneration(str, Enum):
-    """Hunter protocol generation."""
+    """Hunter BLE protocol generation."""
 
-    UNKNOWN = "unknown"
     FIRST = "first"
     SECOND = "second"
+    UNKNOWN = "unknown"
 
 
-FCC0_SERVICE_UUID = "0000fcc0-0000-1000-8000-00805f9b34fb"
-FF80_SERVICE_UUID = "0000ff80-0000-1000-8000-00805f9b34fb"
-FF83_UUID = "0000ff83-0000-1000-8000-00805f9b34fb"
-
-
-@dataclass(frozen=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class HunterCapabilities:
-    """Capabilities discovered for a Hunter controller."""
+    """Capabilities discovered from GATT."""
 
     generation: HunterGeneration
     zone_count: int
     service_uuid: str | None = None
 
 
-def _normalize_uuid(value: object) -> str:
-    """Normalize one UUID-like value."""
-    return str(value).strip().lower()
+FIRST_SERVICE_UUID = "0000fcc0-0000-1000-8000-00805f9b34fb"
+SECOND_SERVICE_UUID = "0000ff80-0000-1000-8000-00805f9b34fb"
 
 
-def _normalize_set(values: object) -> set[str]:
-    """Normalize a collection of UUID-like values."""
+def _normalize_uuids(values: Iterable[object] | None) -> set[str]:
+    """Normalize a collection of UUID-like values.
+
+    This function deliberately handles sets/lists/tuples and never calls
+    string methods on the collection itself.
+    """
     if values is None:
         return set()
 
-    if isinstance(values, str):
-        return {_normalize_uuid(values)}
-
-    try:
-        return {
-            _normalize_uuid(value)
-            for value in values
-        }
-    except TypeError:
-        return {_normalize_uuid(values)}
+    return {
+        str(value).strip().lower()
+        for value in values
+    }
 
 
 def detect_generation(
-    service_uuids: object,
-    characteristic_uuids: object | None = None,
-    *,
+    service_uuids: Iterable[object],
     device_name: str | None = None,
+    characteristic_uuids: Iterable[object] | None = None,
 ) -> HunterGeneration:
     """Detect the Hunter protocol generation.
 
-    BTT100 is a known first-generation controller.  It can expose the
-    FF80 service and FF83 characteristic, but FF83 is not necessarily a
-    writable command characteristic.  Therefore FF80/FF83 presence alone
-    must not classify a device as second generation.
+    BTT100 is known to be first-generation.  Its observed GATT database can
+    contain FF80 and FF83, so FF80/FF83 presence must not by itself classify
+    it as second-generation.
 
-    The FCC0 service is an explicit first-generation marker.  A device
-    named BTT/BTT100 is also treated as first generation when the FCC0
-    service is not available.  Otherwise FF80 with a writable FF83 may be
-    treated as second generation.
+    The Android reference also uses a BTT-prefixed device name as a
+    first-generation signal.  FCC0 is an explicit first-generation service.
+    FF80 is otherwise treated as second-generation.
     """
-    services = _normalize_set(service_uuids)
-    characteristics = _normalize_set(characteristic_uuids)
+    services = _normalize_uuids(service_uuids)
+    _ = _normalize_uuids(characteristic_uuids)
 
-    name = (device_name or "").strip().lower()
+    name = (device_name or "").strip().upper()
 
-    if FCC0_SERVICE_UUID in services:
+    if name.startswith("BTT"):
         return HunterGeneration.FIRST
 
-    if name.startswith("btt100") or name == "btt":
+    if FIRST_SERVICE_UUID in services:
         return HunterGeneration.FIRST
 
-    if FF80_SERVICE_UUID in services:
-        # Presence of FF83 is insufficient.  If no characteristic
-        # properties are available here, retain the legacy-safe default.
-        if FF83_UUID in characteristics:
-            return HunterGeneration.SECOND
+    if SECOND_SERVICE_UUID in services:
+        return HunterGeneration.SECOND
 
     return HunterGeneration.UNKNOWN
 
 
 def detect_zone_count(
-    characteristic_uuids: object,
+    characteristic_uuids: Iterable[object],
     generation: HunterGeneration,
 ) -> int:
-    """Determine the supported zone count conservatively."""
-    characteristics = _normalize_set(characteristic_uuids)
+    """Determine the currently proven zone count."""
+    characteristics = _normalize_uuids(characteristic_uuids)
 
     if generation is HunterGeneration.FIRST:
+        # The current proven first-generation implementation is one-zone.
         return 1
 
     if generation is HunterGeneration.SECOND:
-        # FF8B is the known second-zone configuration characteristic.
-        if "0000ff8b-0000-1000-8000-00805f9b34fb" in characteristics:
+        zone1 = "0000ff86-0000-1000-8000-00805f9b34fb" in characteristics
+        zone2 = "0000ff8b-0000-1000-8000-00805f9b34fb" in characteristics
+
+        if zone1 and zone2:
             return 2
-        return 1
+        if zone1:
+            return 1
 
     return 0
