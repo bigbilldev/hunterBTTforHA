@@ -1,10 +1,4 @@
-"""Hunter BTT BLE transaction engine.
-
-Generation-specific manual START/STOP:
-- First generation uses the proven FCD9/FCEB command characteristics.
-- Second generation may use FF83 only when explicitly authorized.
-- A First-generation transaction can never reach FF83.
-"""
+"""Hunter BTT BLE transaction engine."""
 
 from __future__ import annotations
 
@@ -33,7 +27,7 @@ class TransactionTimeout(TransactionError):
 
 
 class HunterTransactionEngine:
-    """Serialize BLE operations and keep FF83 behind an authorization boundary."""
+    """Serialize BLE operations and enforce generation-specific routing."""
 
     def __init__(self, connection) -> None:
         self._connection = connection
@@ -41,38 +35,24 @@ class HunterTransactionEngine:
         self._ack_event = asyncio.Event()
         self._last_ack: bytes | None = None
         self._ff83_enabled = False
-
-        # First-generation is the safe default until the manager explicitly
-        # enables the second-generation FF83 path.
-        self._generation = "first"
+        self._generation = "unknown"
 
     @property
     def ff83_enabled(self) -> bool:
         return self._ff83_enabled
 
-    def set_ff83_enabled(self, enabled: bool) -> None:
-        """Authorize FF83 only for the second-generation path."""
-        self._ff83_enabled = bool(enabled)
-        self._generation = "second" if self._ff83_enabled else "first"
-        _LOGGER.info(
-            "Hunter transaction mode=%s FF83_authorized=%s",
-            self._generation,
-            self._ff83_enabled,
-        )
-
     def set_generation(self, generation) -> None:
-        """Explicitly set generation when the manager has it available."""
         value = getattr(generation, "value", generation)
         value = str(value).strip().lower()
 
-        if value == "first":
-            self._generation = "first"
+        if value not in {"first", "second"}:
+            self._generation = "unknown"
             self._ff83_enabled = False
-        elif value == "second":
-            self._generation = "second"
         else:
-            self._generation = "first"
-            self._ff83_enabled = False
+            self._generation = value
+            # Generation selection is independent of transport writability.
+            if value == "first":
+                self._ff83_enabled = False
 
         _LOGGER.info(
             "Hunter transaction generation=%s FF83_authorized=%s",
@@ -80,16 +60,25 @@ class HunterTransactionEngine:
             self._ff83_enabled,
         )
 
+    def set_ff83_enabled(self, enabled: bool) -> None:
+        """Authorize FF83 without changing the detected generation."""
+        self._ff83_enabled = bool(enabled)
+
+        _LOGGER.info(
+            "Hunter transaction FF83_authorized=%s generation=%s",
+            self._ff83_enabled,
+            self._generation,
+        )
+
     def _assert_ff83_allowed(self, uuid: str) -> None:
         if str(uuid).strip().lower() == COMMAND_UUID.lower():
             if self._generation != "second" or not self._ff83_enabled:
                 raise TransactionError(
-                    "FF83 write blocked: First-generation Hunter protocol "
-                    "is active."
+                    "FF83 write blocked: generation is not an authorized "
+                    "second-generation controller."
                 )
 
     async def notification(self, uuid: str, payload: bytes) -> None:
-        """Accept protocol acknowledgements supplied by notifications."""
         self._last_ack = bytes(payload)
         self._ack_event.set()
 
@@ -107,7 +96,6 @@ class HunterTransactionEngine:
         *,
         response: bool = True,
     ) -> None:
-        """Write a characteristic with retry/reconnect handling."""
         self._assert_ff83_allowed(uuid)
 
         async def _write() -> None:
@@ -120,8 +108,6 @@ class HunterTransactionEngine:
         await self._retry(_write)
 
     async def read(self, uuid: str) -> bytes:
-        """Read a characteristic with retry/reconnect handling."""
-
         async def _read() -> bytes:
             return await self._connection.client.read(uuid)
 
@@ -157,16 +143,10 @@ class HunterTransactionEngine:
         return self._last_ack or b""
 
     async def start_zone(self, zone: int, runtime_seconds: int) -> None:
-        """Start a zone using the generation-specific proven path."""
         if runtime_seconds <= 0:
             raise TransactionError("Runtime must be greater than zero.")
 
         if self._generation == "first":
-            # BTT100 is the currently proven first-generation device.
-            # The repository's first-generation command builder maps
-            # select_mode 0 -> FCD9 and select_mode 1 -> FCEB.
-            #
-            # Do NOT call self.write(COMMAND_UUID, ...) here.
             if zone != 1:
                 raise TransactionError(
                     "First-generation BTT100 currently supports only zone 1."
@@ -184,22 +164,21 @@ class HunterTransactionEngine:
             )
 
             async with self.transaction():
-                await self.write(
-                    command.uuid,
-                    command.payload,
-                )
+                await self.write(command.uuid, command.payload)
 
             return
 
-        # Second-generation path only.
-        if not self._ff83_enabled:
+        if self._generation != "second":
             raise TransactionError(
-                "Second-generation transaction requested without FF83 "
-                "authorization."
+                "Hunter protocol generation has not been identified."
             )
 
-        # Import lazily so first-generation execution has no dependency on
-        # second-generation packet builders.
+        if not self._ff83_enabled:
+            raise TransactionError(
+                "Second-generation START requested but FF83 is not "
+                "authorized/writable."
+            )
+
         from ..protocol.packets import (
             build_arm_packet,
             build_duration_packet,
@@ -217,7 +196,6 @@ class HunterTransactionEngine:
             await self.write(COMMAND_UUID, build_arm_packet(zone))
 
     async def stop(self) -> None:
-        """Stop watering using the generation-specific proven path."""
         if self._generation == "first":
             command = build_manual_stop(
                 select_mode=0,
@@ -231,17 +209,19 @@ class HunterTransactionEngine:
             )
 
             async with self.transaction():
-                await self.write(
-                    command.uuid,
-                    command.payload,
-                )
+                await self.write(command.uuid, command.payload)
 
             return
 
+        if self._generation != "second":
+            raise TransactionError(
+                "Hunter protocol generation has not been identified."
+            )
+
         if not self._ff83_enabled:
             raise TransactionError(
-                "Second-generation transaction requested without FF83 "
-                "authorization."
+                "Second-generation STOP requested but FF83 is not "
+                "authorized/writable."
             )
 
         from ..protocol.packets import build_stop_packet
@@ -254,10 +234,9 @@ class HunterTransactionEngine:
             await self.write(COMMAND_UUID, packet)
 
     async def command(self, payload: bytes) -> None:
-        """Send a second-generation FF83 command only when authorized."""
         if self._generation != "second" or not self._ff83_enabled:
             raise TransactionError(
-                "Generic FF83 command blocked for First-generation Hunter."
+                "Generic FF83 command blocked: FF83 is not authorized."
             )
         await self.write(COMMAND_UUID, payload)
 
