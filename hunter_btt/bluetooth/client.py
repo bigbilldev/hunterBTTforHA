@@ -1,4 +1,10 @@
-"""Low-level BLE client for Hunter BTT controllers."""
+"""Low-level BLE client for Hunter BTT controllers.
+
+Writes automatically use the GATT write mode actually advertised by the
+characteristic. This is important for FF83: some controllers expose it as
+write-without-response, for which a response=True write is rejected as
+"Write not permitted".
+"""
 
 from __future__ import annotations
 
@@ -59,14 +65,14 @@ class HunterBLEClient:
         }
 
     def characteristic_properties(self, uuid: str) -> set[str]:
-        """Return the actual GATT properties for a characteristic."""
+        """Return actual GATT properties for a characteristic."""
         target = str(uuid).strip().lower()
         if self._client is None:
             return set()
 
         for service in self._client.services:
             for characteristic in service.characteristics:
-                if str(characteristic.uuid).lower() == target:
+                if str(characteristic.uuid).strip().lower() == target:
                     return {
                         str(prop).strip().lower()
                         for prop in characteristic.properties
@@ -75,9 +81,7 @@ class HunterBLEClient:
 
     def characteristic_is_writable(self, uuid: str) -> bool:
         properties = self.characteristic_properties(uuid)
-        return bool(
-            {"write", "write-without-response"} & properties
-        )
+        return bool({"write", "write-without-response"} & properties)
 
     @property
     def ff83_writable(self) -> bool:
@@ -103,9 +107,7 @@ class HunterBLEClient:
                 connectable=True,
             )
             if device is None:
-                raise BleakError(
-                    f"Unable to locate BLE device {self._address}"
-                )
+                raise BleakError(f"Unable to locate BLE device {self._address}")
 
             try:
                 self._client = await establish_connection(
@@ -143,14 +145,46 @@ class HunterBLEClient:
         uuid: str,
         payload: bytes,
         *,
-        response: bool = True,
+        response: bool | None = None,
     ) -> None:
+        """Write using the characteristic's supported GATT write mode.
+
+        response=None is the safe/default behavior. If the characteristic
+        supports only write-without-response, response=False is selected.
+        If it supports normal write, response=True is selected.
+        """
         await self._ensure_connected()
+
         async with self._lock:
             assert self._client is not None
+
+            target = str(uuid).strip().lower()
+            properties = self.characteristic_properties(target)
+
+            if response is None:
+                if "write" in properties:
+                    response = True
+                elif "write-without-response" in properties:
+                    response = False
+                else:
+                    raise BleakError(
+                        f"Characteristic {uuid} is not writable; "
+                        f"properties={sorted(properties)}"
+                    )
+
+            _LOGGER.debug(
+                "Hunter BLE write uuid=%s response=%s properties=%s payload=%s",
+                uuid,
+                response,
+                sorted(properties),
+                bytes(payload).hex(" "),
+            )
+
             try:
                 await self._client.write_gatt_char(
-                    uuid, payload, response=response
+                    uuid,
+                    payload,
+                    response=response,
                 )
             except Exception as err:
                 raise BleakError(f"Write failed for {uuid}: {err}") from err
@@ -164,7 +198,8 @@ class HunterBLEClient:
 
         def _callback(characteristic, data) -> None:
             result = self._notification_callback(
-                str(characteristic.uuid), bytes(data)
+                str(characteristic.uuid),
+                bytes(data),
             )
             if inspect.isawaitable(result):
                 asyncio.create_task(result)
