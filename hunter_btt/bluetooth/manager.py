@@ -14,7 +14,6 @@ from ..protocol.generation import (
     HunterGeneration,
     detect_generation,
     detect_zone_count,
-    validate_generation_services,
 )
 from .client import HunterBLEClient
 from .connection import HunterConnection
@@ -85,7 +84,7 @@ class HunterBLEManager:
             await result
 
     async def connect(self) -> None:
-        """Connect, identify the protocol family, and validate its service."""
+        """Connect, identify protocol family, then validate its service."""
         if self.connected:
             return
 
@@ -95,6 +94,8 @@ class HunterBLEManager:
             services = set(self.connection.service_uuids)
             characteristics = set(self.connection.characteristic_uuids)
 
+            # Device name is the primary generation discriminator, matching
+            # the decompiled AisWrapper. GATT UUIDs validate the result.
             self._generation = detect_generation(
                 service_uuids=services,
                 device_name=self.name,
@@ -113,19 +114,17 @@ class HunterBLEManager:
                     "Unable to identify Hunter BLE protocol generation."
                 )
 
-            if not validate_generation_services(
-                self._generation,
-                services,
-            ):
+            expected_service = (
+                FCC0_SERVICE_UUID
+                if self._generation is HunterGeneration.FIRST
+                else FF80_SERVICE_UUID
+            )
+
+            if expected_service not in services:
                 await self.connection.disconnect()
-                expected = (
-                    FCC0_SERVICE_UUID
-                    if self._generation is HunterGeneration.FIRST
-                    else FF80_SERVICE_UUID
-                )
                 raise HunterManagerError(
                     "Hunter protocol service validation failed: "
-                    f"expected {expected}."
+                    f"expected {expected_service}."
                 )
 
             zone_count = detect_zone_count(
@@ -194,9 +193,12 @@ class HunterBLEManager:
             raise HunterManagerError("Runtime must be greater than zero.")
 
         if zone < 1 or zone > self._capabilities.zone_count:
-            raise HunterManagerError(f"Zone {zone} is not supported.")
+            raise HunterManagerError(
+                f"Zone {zone} is not supported."
+            )
 
         if self._generation is HunterGeneration.FIRST:
+            # Do not send FF83 to first-generation controllers.
             raise HunterManagerError(
                 "First-generation Hunter detected. "
                 "The FCC0/First protocol handler is not yet connected "
