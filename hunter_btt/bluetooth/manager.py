@@ -1,9 +1,4 @@
-"""Hunter BTT BLE manager.
-
-Generation is selected once at connection time. Manual START/STOP are always
-delegated to the transaction engine; the manager does not contain a separate
-FF83 gate that can bypass the transaction engine.
-"""
+"""Hunter BTT BLE manager."""
 
 from __future__ import annotations
 
@@ -35,7 +30,7 @@ class HunterManagerError(Exception):
 
 
 class HunterBLEManager:
-    """Manage Hunter BLE connection and generation-specific transactions."""
+    """Manage the BLE connection and protocol transactions."""
 
     def __init__(
         self,
@@ -59,9 +54,9 @@ class HunterBLEManager:
             generation=HunterGeneration.UNKNOWN,
             zone_count=0,
         )
-        self._ff83_authorized = False
         self.connected = False
         self._state_callback = None
+
         self.state: dict[str, Any] = {
             "battery": None,
             "running": False,
@@ -93,7 +88,7 @@ class HunterBLEManager:
             await result
 
     async def connect(self) -> None:
-        if self.connected:
+        if self.connected and self.connection.connected:
             return
 
         try:
@@ -110,6 +105,8 @@ class HunterBLEManager:
 
             normalized_name = normalize_android_device_name(self.name)
 
+            # GATT service identity is authoritative.  Do not classify a
+            # BTT100/BTT200 from the marketing name when the service is known.
             self._generation = detect_generation(
                 service_uuids=services,
                 device_name=self.name,
@@ -127,43 +124,49 @@ class HunterBLEManager:
             )
             if zone_count < 1:
                 raise HunterManagerError(
-                    f"No supported zones found for "
-                    f"{self._generation.value} generation."
+                    f"No supported zones found for {self._generation.value} generation."
                 )
-
-            # SECOND generation may use FF83. FIRST never does.
-            ff83_writable = self.client.ff83_writable
-            self._ff83_authorized = (
-                self._generation is HunterGeneration.SECOND
-                and ff83_writable
-            )
-
-            self.transaction.set_generation(self._generation)
-
-            service_uuid = (
-                SECOND_SERVICE_UUID
-                if self._generation is HunterGeneration.SECOND
-                else FCC0_SERVICE_UUID
-            )
 
             self._capabilities = HunterCapabilities(
                 generation=self._generation,
                 zone_count=zone_count,
-                service_uuid=service_uuid,
+                service_uuid=(
+                    SECOND_SERVICE_UUID
+                    if self._generation is HunterGeneration.SECOND
+                    else FCC0_SERVICE_UUID
+                ),
             )
+
+            self.transaction.set_generation(self._generation)
+
+            # Android discovers services, initializes its characteristic
+            # objects, then enables the transaction handler.  The HA client
+            # has already completed service discovery at this point.  Subscribe
+            # before commands so FF82/FF8A notifications cannot be missed.
+            try:
+                await self.client.subscribe(
+                    self.transaction.notification
+                )
+            except Exception as err:
+                _LOGGER.debug(
+                    "Hunter notifications could not be subscribed: %s",
+                    err,
+                )
+
             self.connected = True
+
+            ff83_properties = self.client.characteristic_properties(
+                "0000ff83-0000-1000-8000-00805f9b34fb"
+            )
 
             _LOGGER.info(
                 "Hunter connected: name=%r normalized=%r generation=%s "
-                "zones=%d FF83_properties=%s FF83_authorized=%s",
+                "zones=%d FF83_properties=%s",
                 self.name,
                 normalized_name,
                 self._generation.value,
                 zone_count,
-                sorted(self.client.characteristic_properties(
-                    "0000ff83-0000-1000-8000-00805f9b34fb"
-                )),
-                self._ff83_authorized,
+                sorted(ff83_properties),
             )
 
         except HunterManagerError:
@@ -185,9 +188,13 @@ class HunterBLEManager:
             ) from err
 
     async def disconnect(self) -> None:
+        try:
+            await self.client.unsubscribe()
+        except Exception:
+            pass
+
         await self.connection.disconnect()
         self.connected = False
-        self._ff83_authorized = False
         self.transaction.set_generation(HunterGeneration.UNKNOWN)
         await self._notify_state_changed()
 
@@ -209,15 +216,10 @@ class HunterBLEManager:
         if zone < 1 or zone > self._capabilities.zone_count:
             raise HunterManagerError(f"Zone {zone} is not supported.")
 
-        # CRITICAL: no generation-specific START implementation here.
-        # transaction.py is the single routing point.
         await self.transaction.start_zone(zone, runtime)
 
     async def stop(self) -> None:
         await self.ensure_connected()
-
-        # CRITICAL: no FF83 gate here. FIRST routes to FCD9/FCEB;
-        # SECOND routes to FF83 inside transaction.py.
         await self.transaction.stop()
 
     async def refresh(self) -> dict[str, Any]:
