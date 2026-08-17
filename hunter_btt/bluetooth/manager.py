@@ -184,40 +184,36 @@ class HunterBLEManager:
             services = self.connection.service_uuids
             characteristics = self.connection.characteristic_uuids
 
-            self._generation = detect_generation(services)
+            self._generation = detect_generation(
+                services,
+                characteristics,
+                self.name,
+            )
 
-            _LOGGER.warning(
-                "PROTOCOL DEBUG: services=%s characteristics=%s generation=%s",
-                sorted(services),
-                sorted(characteristics),
+            # FF80 is shared by the Hunter BTT family.  The BTT100 is
+            # a first-generation controller even though it exposes FF83.
+            # Generation detection therefore uses device identity as well
+            # as the GATT profile.
+            self._ff80_legacy = (
+                SECOND_SERVICE_UUID in services
+                and self._generation is HunterGeneration.FIRST
+            )
+
+            if self._generation is HunterGeneration.UNKNOWN:
+                await self.connection.disconnect()
+                raise HunterManagerError(
+                    "Unable to identify Hunter BLE protocol generation."
+                )
+
+            zone_count = detect_zone_count(
+                characteristics,
                 self._generation,
             )
 
-            # FF80 is shared by devices which do not necessarily use FF83.
-            # The BTT100 test device has FF80 but no FF83. Do not route it
-            # into the FF83 transaction engine.
-            self._ff80_legacy = (
-                SECOND_SERVICE_UUID in services
-                and COMMAND_UUID not in characteristics
-            )
-
             if self._ff80_legacy:
-                self._generation = HunterGeneration.FIRST
                 zone_count = 1
-                _LOGGER.warning(
-                    "Hunter BTT legacy FF80 profile detected: "
-                    "FF83 is absent; using one-zone legacy profile"
-                )
-            else:
-                if self._generation is HunterGeneration.UNKNOWN:
-                    await self.connection.disconnect()
-                    raise HunterManagerError(
-                        "Unable to identify Hunter BLE protocol generation."
-                    )
-
-                zone_count = detect_zone_count(
-                    characteristics,
-                    self._generation,
+                _LOGGER.info(
+                    "Hunter BTT100 first-generation FF80 profile detected"
                 )
 
             self._capabilities = HunterCapabilities(
@@ -498,28 +494,17 @@ class HunterBLEManager:
                 f"Zone {zone} is not supported."
             )
 
-        if self._ff80_legacy:
-            raise HunterManagerError(
-                "BTT100 legacy FF80 protocol detected. "
-                "FF83 is not present; the legacy FFAx start "
-                "protocol has not yet been mapped."
-            )
-
-        _LOGGER.warning(
-            "PROTOCOL DEBUG START: generation=%s connected=%s zone=%s runtime=%s",
-            self._generation,
-            self.connected,
-            zone,
-            runtime,
-        )
-
         if self._generation is HunterGeneration.FIRST:
+            if self._ff80_legacy:
+                raise HunterManagerError(
+                    "BTT100 first-generation FF80 protocol selected. "
+                    "The FFAx manual-start protocol is not yet mapped; "
+                    "FF83 must not be used."
+                )
+
             await self._start_zone_first(zone, runtime)
             return
 
-        _LOGGER.warning(
-            "PROTOCOL DEBUG: ENTERING FF83 TRANSACTION PATH"
-        )
         await self.transaction.start_zone(zone, runtime)
         self.state["running"] = True
         self.state["active_zone"] = zone
@@ -582,14 +567,14 @@ class HunterBLEManager:
         """Stop manual watering."""
         await self.ensure_connected()
 
-        if self._ff80_legacy:
-            raise HunterManagerError(
-                "BTT100 legacy FF80 protocol detected. "
-                "FF83 is not used; the legacy FFAx stop "
-                "protocol has not yet been mapped."
-            )
-
         if self._generation is HunterGeneration.FIRST:
+            if self._ff80_legacy:
+                raise HunterManagerError(
+                    "BTT100 first-generation FF80 protocol selected. "
+                    "The FFAx manual-stop protocol is not yet mapped; "
+                    "FF83 must not be used."
+                )
+
             await self._stop_first()
             return
 
@@ -792,7 +777,8 @@ class HunterBLEManager:
         """Write a raw GATT characteristic."""
         if self._ff80_legacy and uuid.lower() == COMMAND_UUID:
             raise HunterManagerError(
-                "FF83 is not available on the BTT100 legacy FF80 profile."
+                "FF83 is not a valid command path for the BTT100 "
+                "first-generation FF80 profile."
             )
 
         await self._write(uuid, payload)
