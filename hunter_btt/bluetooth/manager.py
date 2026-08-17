@@ -186,6 +186,13 @@ class HunterBLEManager:
 
             self._generation = detect_generation(services)
 
+            _LOGGER.warning(
+                "PROTOCOL DEBUG: services=%s characteristics=%s generation=%s",
+                sorted(services),
+                sorted(characteristics),
+                self._generation,
+            )
+
             # FF80 is shared by devices which do not necessarily use FF83.
             # The BTT100 test device has FF80 but no FF83. Do not route it
             # into the FF83 transaction engine.
@@ -498,10 +505,21 @@ class HunterBLEManager:
                 "protocol has not yet been mapped."
             )
 
+        _LOGGER.warning(
+            "PROTOCOL DEBUG START: generation=%s connected=%s zone=%s runtime=%s",
+            self._generation,
+            self.connected,
+            zone,
+            runtime,
+        )
+
         if self._generation is HunterGeneration.FIRST:
             await self._start_zone_first(zone, runtime)
             return
 
+        _LOGGER.warning(
+            "PROTOCOL DEBUG: ENTERING FF83 TRANSACTION PATH"
+        )
         await self.transaction.start_zone(zone, runtime)
         self.state["running"] = True
         self.state["active_zone"] = zone
