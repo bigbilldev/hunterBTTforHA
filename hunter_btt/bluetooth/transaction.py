@@ -1,4 +1,11 @@
-"""Serialized Hunter BTT transactions with an absolute FF83 safety guard."""
+"""Hunter BTT transaction engine.
+
+FF83 is deliberately disabled in this build.
+
+The current test device is a first-generation BTT100.  Although its BLE
+database exposes FF83, the characteristic rejects writes.  Therefore this
+module contains an absolute FF83 block at the lowest common write path.
+"""
 
 from __future__ import annotations
 
@@ -27,7 +34,7 @@ MAX_RETRIES = 2
 
 
 class TransactionError(RuntimeError):
-    """Transaction failed."""
+    """Transaction failed or was intentionally blocked."""
 
 
 class TransactionTimeout(TransactionError):
@@ -35,34 +42,48 @@ class TransactionTimeout(TransactionError):
 
 
 class HunterTransactionEngine:
-    """Serialize transactions and enforce the FF83 authorization boundary."""
+    """Serialize Hunter transactions.
+
+    IMPORTANT:
+    FF83 is hard-disabled.  There is intentionally no authorization switch
+    that can enable it.  This prevents any accidental FF83 BLE write while
+    the first-generation BTT100 protocol is being implemented.
+    """
 
     def __init__(self, connection) -> None:
         self._connection = connection
         self._lock = asyncio.Lock()
         self._ack_event = asyncio.Event()
         self._last_ack: bytes | None = None
-        self._ff83_enabled = False
 
     @property
     def ff83_enabled(self) -> bool:
-        return self._ff83_enabled
+        """Always false in this build."""
+        return False
 
     def set_ff83_enabled(self, enabled: bool) -> None:
-        self._ff83_enabled = bool(enabled)
-        _LOGGER.info(
-            "FF83 transaction authorization=%s",
-            self._ff83_enabled,
-        )
+        """Compatibility method; FF83 cannot be enabled."""
+        if enabled:
+            _LOGGER.error(
+                "IGNORING request to enable FF83: FF83 is hard-disabled "
+                "in the current Hunter BTT build."
+            )
+        else:
+            _LOGGER.debug("FF83 remains hard-disabled.")
 
     def _assert_write_allowed(self, uuid: str) -> None:
-        """Reject FF83 before connection/retry/BLE code is reached."""
+        """Absolute FF83 safety boundary.
+
+        This executes before _retry(), connection handling, and client.write().
+        """
         if str(uuid).strip().lower() == COMMAND_UUID:
-            if not self._ff83_enabled:
-                raise TransactionError(
-                    "FF83 WRITE BLOCKED before BLE I/O. "
-                    "This transaction is not authorized for this controller."
-                )
+            _LOGGER.error(
+                "BLOCKED FF83 WRITE before BLE I/O. "
+                "No write to FF83 was attempted."
+            )
+            raise TransactionError(
+                "FF83 is hard-disabled. No BLE write was attempted."
+            )
 
     async def notification(self, uuid: str, payload: bytes) -> None:
         if uuid.lower().endswith(
@@ -97,8 +118,7 @@ class HunterTransactionEngine:
         *,
         response: bool = True,
     ) -> None:
-        # CRITICAL: this is before _retry(), so an unauthorized FF83 write
-        # cannot produce a BLE Write-not-permitted error.
+        # MUST remain before _retry().
         self._assert_write_allowed(uuid)
 
         async def _write() -> None:
@@ -111,46 +131,18 @@ class HunterTransactionEngine:
         await self._retry(_write)
 
     async def start_zone(self, zone: int, runtime_seconds: int) -> None:
-        self._assert_write_allowed(COMMAND_UUID)
-
-        async with self.transaction():
-            await self.write(
-                COMMAND_UUID,
-                build_prepare_packet(zone),
-            )
-            await asyncio.sleep(PREPARE_DELAY)
-
-            await self.write(
-                COMMAND_UUID,
-                build_duration_packet(runtime_seconds),
-            )
-            await asyncio.sleep(ARM_DELAY)
-
-            await self.write(
-                COMMAND_UUID,
-                build_arm_packet(zone),
-            )
-
-            try:
-                await self.wait_for_ack()
-            except TransactionTimeout:
-                _LOGGER.debug(
-                    "No acknowledgement received after start."
-                )
+        """FF83 start path is intentionally unavailable."""
+        raise TransactionError(
+            "FF83 start is disabled. The first-generation Hunter protocol "
+            "must be used for this controller."
+        )
 
     async def stop(self) -> None:
-        self._assert_write_allowed(COMMAND_UUID)
-
-        async with self.transaction():
-            packet = build_stop_packet()
-            await self.write(COMMAND_UUID, packet)
-            await asyncio.sleep(STOP_DELAY)
-            await self.write(COMMAND_UUID, packet)
-
-            try:
-                await self.wait_for_ack()
-            except TransactionTimeout:
-                pass
+        """FF83 stop path is intentionally unavailable."""
+        raise TransactionError(
+            "FF83 stop is disabled. The first-generation Hunter protocol "
+            "must be used for this controller."
+        )
 
     async def _retry(
         self,
@@ -163,7 +155,6 @@ class HunterTransactionEngine:
                 await self._connection.ensure_connection()
                 await func()
                 return
-
             except BleakError as err:
                 last_error = err
                 _LOGGER.warning(
@@ -180,7 +171,10 @@ class HunterTransactionEngine:
         ) from last_error
 
     async def command(self, payload: bytes) -> None:
-        await self.write(COMMAND_UUID, payload)
+        """Generic command path is disabled because it targets FF83."""
+        raise TransactionError(
+            "Generic FF83 command path is disabled."
+        )
 
     async def read(self, uuid: str) -> bytes:
         async def _read() -> bytes:
@@ -205,6 +199,7 @@ class HunterTransactionEngine:
         uuid: str,
         payload: bytes,
     ) -> None:
+        self._assert_write_allowed(uuid)
         await self.write(uuid, payload)
 
     async def execute_sequence(
