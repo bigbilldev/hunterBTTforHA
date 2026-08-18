@@ -1,10 +1,8 @@
-"""
-Config flow for the Hunter BTT integration.
+"""Config flow for Hunter BTT.
 
-Discovery is intentionally generation-agnostic. A Hunter controller is accepted
-from its advertised Hunter BLE service or recognizable Bluetooth name. The
-generation/protocol is determined only after the device is selected and
-connected.
+Discovery follows the Android application's model: perform an active BLE scan,
+identify a candidate from the advertisement, then defer protocol/generation
+identification until after a real GATT connection and service discovery.
 """
 
 from __future__ import annotations
@@ -34,27 +32,37 @@ class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         self._devices: dict[str, BluetoothServiceInfoBleak] = {}
 
-    async def async_step_user(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> FlowResult:
-        """Show all currently discovered Hunter controllers."""
+    async def _async_refresh_discoveries(self) -> None:
+        """Run a one-shot active scan, then refresh the HA discovery cache."""
+        await bluetooth.async_request_active_scan(self.hass, duration=5)
         current = bluetooth.async_discovered_service_info(
             self.hass,
             connectable=True,
         )
-
         self._devices = {
             info.address: info
             for info in current
             if is_hunter_btt(info)
         }
-
         _LOGGER.debug(
-            "Hunter discovery found %d candidate(s): %s",
+            "Hunter active scan: %d candidate(s): %s",
             len(self._devices),
-            list(self._devices),
+            {
+                address: {
+                    "name": info.name,
+                    "local_name": getattr(info, "local_name", None),
+                    "services": sorted(info.service_uuids),
+                }
+                for address, info in self._devices.items()
+            },
         )
+
+    async def async_step_user(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> FlowResult:
+        """Handle user initiated setup."""
+        await self._async_refresh_discoveries()
 
         if not self._devices:
             return self.async_abort(reason="no_devices_found")
@@ -62,7 +70,6 @@ class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             address = user_input[CONF_ADDRESS]
             discovery = self._devices.get(address)
-
             if discovery is None:
                 return self.async_abort(reason="device_not_found")
 
@@ -81,13 +88,10 @@ class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             address: f"{info.name or 'Hunter BTT'} ({address})"
             for address, info in self._devices.items()
         }
-
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_ADDRESS): vol.In(options),
-                }
+                {vol.Required(CONF_ADDRESS): vol.In(options)}
             ),
         )
 
@@ -95,33 +99,30 @@ class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self,
         discovery_info: BluetoothServiceInfoBleak,
     ) -> FlowResult:
-        """Handle automatic Home Assistant Bluetooth discovery."""
+        """Handle Home Assistant Bluetooth discovery."""
+        if not discovery_info.connectable:
+            return self.async_abort(reason="not_supported")
         if not is_hunter_btt(discovery_info):
             return self.async_abort(reason="not_supported")
 
         await self.async_set_unique_id(discovery_info.address)
         self._abort_if_unique_id_configured()
 
+        self._devices = {discovery_info.address: discovery_info}
         self.context["title_placeholders"] = {
             "name": discovery_info.name or discovery_info.address,
         }
-
-        self._devices = {
-            discovery_info.address: discovery_info,
-        }
-
         return await self.async_step_confirm()
 
     async def async_step_confirm(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> FlowResult:
-        """Confirm an automatically discovered controller."""
+        """Confirm discovery."""
         discovery = next(iter(self._devices.values()))
 
         if user_input is not None:
             self._abort_if_unique_id_configured()
-
             return self.async_create_entry(
                 title=discovery.name or discovery.address,
                 data={
@@ -144,13 +145,11 @@ class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Reconfigure the display name."""
         entry = self._get_reconfigure_entry()
-
         if user_input is not None:
-            self.hass.config_entries.async_update_entry(
+            return self.async_update_reload_and_abort(
                 entry,
-                data=user_input,
+                data_updates=user_input,
             )
-            return self.async_abort(reason="reconfigured")
 
         return self.async_show_form(
             step_id="reconfigure",
@@ -173,7 +172,7 @@ class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class HunterOptionsFlow(config_entries.OptionsFlow):
-    """Integration options."""
+    """Hunter BTT options."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         self._entry = config_entry
@@ -182,7 +181,7 @@ class HunterOptionsFlow(config_entries.OptionsFlow):
         self,
         user_input: dict[str, Any] | None = None,
     ) -> FlowResult:
-        """Configure integration options."""
+        """Handle options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
@@ -197,15 +196,13 @@ class HunterOptionsFlow(config_entries.OptionsFlow):
                     vol.Optional(
                         "automatic_refresh",
                         default=self._entry.options.get(
-                            "automatic_refresh",
-                            True,
+                            "automatic_refresh", True
                         ),
                     ): bool,
                     vol.Optional(
                         "debug_logging",
                         default=self._entry.options.get(
-                            "debug_logging",
-                            False,
+                            "debug_logging", False
                         ),
                     ): bool,
                 }
