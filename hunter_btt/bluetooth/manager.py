@@ -30,7 +30,7 @@ class HunterManagerError(Exception):
 
 
 class HunterBLEManager:
-    """Manage the BLE connection and protocol transactions."""
+    """Manage BLE connection, GATT identification and transactions."""
 
     def __init__(
         self,
@@ -41,10 +41,10 @@ class HunterBLEManager:
         self.address = discovery_info.address
         self.name = (
             getattr(discovery_info, "name", None)
-            or getattr(discovery_info, "service_name", None)
+            or getattr(discovery_info, "local_name", None)
+            or getattr(discovery_info.device, "name", None)
             or ""
         )
-
         self.client = HunterBLEClient(hass, discovery_info)
         self.connection = HunterConnection(hass, self.client)
         self.transaction = HunterTransactionEngine(self.connection)
@@ -56,7 +56,6 @@ class HunterBLEManager:
         )
         self.connected = False
         self._state_callback = None
-
         self.state: dict[str, Any] = {
             "battery": None,
             "running": False,
@@ -88,34 +87,32 @@ class HunterBLEManager:
             await result
 
     async def connect(self) -> None:
+        """Connect, enumerate GATT, then identify protocol and zones."""
         if self.connected and self.connection.connected:
             return
 
         try:
             await self.connection.connect()
 
-            services = {
-                str(uuid).strip().lower()
-                for uuid in self.connection.service_uuids
-            }
-            characteristics = {
-                str(uuid).strip().lower()
-                for uuid in self.connection.characteristic_uuids
-            }
+            services = set(self.connection.service_uuids)
+            characteristics = set(self.connection.characteristic_uuids)
 
-            normalized_name = normalize_android_device_name(self.name)
+            _LOGGER.debug(
+                "Hunter post-connect GATT inventory address=%s services=%s chars=%s",
+                self.address,
+                sorted(services),
+                sorted(characteristics),
+            )
 
-            # GATT service identity is authoritative.  Do not classify a
-            # BTT100/BTT200 from the marketing name when the service is known.
             self._generation = detect_generation(
                 service_uuids=services,
                 device_name=self.name,
                 characteristic_uuids=characteristics,
             )
-
             if self._generation is HunterGeneration.UNKNOWN:
                 raise HunterManagerError(
-                    "Unable to identify Hunter protocol generation."
+                    "Unable to identify Hunter protocol generation from "
+                    "connected GATT services/characteristics."
                 )
 
             zone_count = detect_zone_count(
@@ -124,7 +121,8 @@ class HunterBLEManager:
             )
             if zone_count < 1:
                 raise HunterManagerError(
-                    f"No supported zones found for {self._generation.value} generation."
+                    f"No supported zones found for "
+                    f"{self._generation.value} generation."
                 )
 
             self._capabilities = HunterCapabilities(
@@ -139,34 +137,26 @@ class HunterBLEManager:
 
             self.transaction.set_generation(self._generation)
 
-            # Android discovers services, initializes its characteristic
-            # objects, then enables the transaction handler.  The HA client
-            # has already completed service discovery at this point.  Subscribe
-            # before commands so FF82/FF8A notifications cannot be missed.
+            # Android initializes the characteristic map and notification
+            # handlers after GATT service discovery. Mirror that ordering.
             try:
-                await self.client.subscribe(
-                    self.transaction.notification
-                )
+                await self.client.subscribe(self.transaction.notification)
             except Exception as err:
                 _LOGGER.debug(
-                    "Hunter notifications could not be subscribed: %s",
+                    "Hunter notification subscription incomplete: %s",
                     err,
                 )
 
             self.connected = True
 
-            ff83_properties = self.client.characteristic_properties(
-                "0000ff83-0000-1000-8000-00805f9b34fb"
-            )
-
             _LOGGER.info(
-                "Hunter connected: name=%r normalized=%r generation=%s "
-                "zones=%d FF83_properties=%s",
-                self.name,
-                normalized_name,
+                "Hunter connected: address=%s name=%r generation=%s zones=%d "
+                "services=%s",
+                self.address,
+                normalize_android_device_name(self.name),
                 self._generation.value,
                 zone_count,
-                sorted(ff83_properties),
+                sorted(services),
             )
 
         except HunterManagerError:
@@ -176,7 +166,6 @@ class HunterBLEManager:
             except Exception:
                 pass
             raise
-
         except Exception as err:
             self.connected = False
             try:
@@ -192,7 +181,6 @@ class HunterBLEManager:
             await self.client.unsubscribe()
         except Exception:
             pass
-
         await self.connection.disconnect()
         self.connected = False
         self.transaction.set_generation(HunterGeneration.UNKNOWN)
@@ -209,13 +197,10 @@ class HunterBLEManager:
 
     async def start_zone(self, zone: int, runtime: int) -> None:
         await self.ensure_connected()
-
         if runtime <= 0:
             raise HunterManagerError("Runtime must be greater than zero.")
-
         if zone < 1 or zone > self._capabilities.zone_count:
             raise HunterManagerError(f"Zone {zone} is not supported.")
-
         await self.transaction.start_zone(zone, runtime)
 
     async def stop(self) -> None:

@@ -1,63 +1,51 @@
-"""Generation-agnostic Hunter BTT Bluetooth discovery."""
+"""Hunter BTT advertisement filtering.
+
+This module intentionally does not decide first/second generation. The
+Android code first finds a BLE device, then initializes the protocol objects
+against the connected GATT service. We mirror that separation here.
+"""
 
 from __future__ import annotations
 
 from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
 
-# Both protocol families are accepted at discovery time. This is NOT a
-# generation decision; generation.py makes that decision after connection.
-HUNTER_SERVICE_UUIDS = frozenset(
-    {
-        "0000ff80-0000-1000-8000-00805f9b34fb",
-        "0000fcc0-0000-1000-8000-00805f9b34fb",
-    }
-)
+FIRST_SERVICE_UUID = "0000fcc0-0000-1000-8000-00805f9b34fb"
+SECOND_SERVICE_UUID = "0000ff80-0000-1000-8000-00805f9b34fb"
 
-HUNTER_NAME_MARKERS = (
-    "hunter",
-    "btt",
-)
+_HUNTER_MARKERS = ("hunter", "btt")
 
 
-def _normalized(value: str | None) -> str:
+def _norm(value: str | None) -> str:
     return (value or "").strip().lower()
 
 
-def is_hunter_btt(
-    discovery: BluetoothServiceInfoBleak,
-) -> bool:
-    """Return True when an advertisement is plausibly a Hunter BTT.
-
-    Do not inspect FF82/FF83 properties here and do not decide generation
-    here. Those operations require a connection and belong to protocol
-    detection after discovery.
-    """
-    advertised_services = {
-        _normalized(uuid)
-        for uuid in discovery.service_uuids
-    }
-
-    if advertised_services & HUNTER_SERVICE_UUIDS:
-        return True
-
-    # HA's BluetoothServiceInfoBleak normally exposes name; local_name is
-    # included when available on the object supplied by the scanner.
-    names = {
-        _normalized(getattr(discovery, "name", None)),
-        _normalized(getattr(discovery, "service_name", None)),
-        _normalized(getattr(discovery, "service_data", None).__class__.__name__),
-    }
-
-    # Use the actual advertised/device name when present. Do not require a
-    # particular model suffix because BT100/BTT variants may advertise
-    # differently.
-    device_name = _normalized(
-        getattr(discovery, "name", None)
-        or getattr(getattr(discovery, "device", None), "name", None)
-        or getattr(discovery, "local_name", None)
+def discovery_name(info: BluetoothServiceInfoBleak) -> str:
+    """Return the best available advertised/device name."""
+    return (
+        _norm(getattr(info, "local_name", None))
+        or _norm(getattr(info, "name", None))
+        or _norm(getattr(info.device, "name", None))
     )
 
-    if any(marker in device_name for marker in HUNTER_NAME_MARKERS):
+
+def is_hunter_btt(info: BluetoothServiceInfoBleak) -> bool:
+    """Identify a Hunter candidate without making a protocol decision."""
+    services = {_norm(uuid) for uuid in info.service_uuids}
+
+    if FIRST_SERVICE_UUID in services or SECOND_SERVICE_UUID in services:
         return True
 
-    return False
+    name = discovery_name(info)
+    return any(marker in name for marker in _HUNTER_MARKERS)
+
+
+def describe_discovery(info: BluetoothServiceInfoBleak) -> dict[str, object]:
+    """Return diagnostic discovery data."""
+    return {
+        "address": info.address,
+        "name": getattr(info, "name", None),
+        "local_name": getattr(info, "local_name", None),
+        "service_uuids": sorted(info.service_uuids),
+        "connectable": info.connectable,
+        "rssi": info.rssi,
+    }
