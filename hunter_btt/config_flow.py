@@ -1,14 +1,12 @@
-"""Config flow for Hunter BTT.
+"""Hunter BTT configuration flow.
 
-Discovery follows the Android application's approach rather than requiring a
-specific advertised service to be present in Home Assistant's cached scan.
+Discovery deliberately follows the Android application's advertisement
+approach: identify the controller from what it advertises, then resolve a
+connectable BLE device by address only when a connection is actually needed.
 
-The flow:
-1. Use HA's one-shot active scan.
-2. Inspect every newly available connectable advertisement.
-3. Accept FCC0, FF80, or an Android-style BTT/Hunter name.
-4. Preserve the raw discovery information for the later connection layer.
-5. Do NOT determine generation or probe GATT during discovery.
+This is important with ESPHome/remote Bluetooth proxies: the advertisement
+can arrive as non-connectable even though the proxy can subsequently provide
+a connectable BLEDevice for the same address.
 """
 
 from __future__ import annotations
@@ -28,7 +26,10 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-ACTIVE_SCAN_SECONDS = 5
+ACTIVE_SCAN_SECONDS = 8
+ADDRESS_SCHEMA = vol.Schema(
+    {vol.Required(CONF_ADDRESS): str}
+)
 
 
 class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -37,40 +38,35 @@ class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     def __init__(self) -> None:
-        """Initialize the flow."""
         self._devices: dict[str, BluetoothServiceInfoBleak] = {}
 
     async def _discover_devices(self) -> dict[str, BluetoothServiceInfoBleak]:
-        """Run an active scan and return Hunter candidates."""
+        """Collect Hunter advertisements regardless of connectable flag."""
         try:
             await bluetooth.async_request_active_scan(
                 self.hass,
                 duration=ACTIVE_SCAN_SECONDS,
             )
         except Exception as err:
-            _LOGGER.warning("Hunter active Bluetooth scan failed: %s", err)
+            _LOGGER.warning("Hunter active scan request failed: %s", err)
 
-        # Read the cache AFTER the active sweep. Do not depend on the
-        # integration manifest's service UUID filter for manual discovery.
-        current = bluetooth.async_discovered_service_info(
+        infos = bluetooth.async_discovered_service_info(
             self.hass,
-            connectable=True,
+            connectable=False,
         )
 
         devices: dict[str, BluetoothServiceInfoBleak] = {}
-        for info in current:
+        for info in infos:
             details = describe_discovery(info)
-            _LOGGER.debug("Hunter Bluetooth advertisement: %s", details)
+            _LOGGER.warning("Hunter advertisement seen: %s", details)
 
-            if not is_hunter_btt(info):
-                continue
+            if is_hunter_btt(info):
+                devices[info.address] = info
 
-            devices[info.address] = info
-
-        _LOGGER.info(
-            "Hunter Bluetooth discovery found %d candidate(s): %s",
+        _LOGGER.warning(
+            "Hunter discovery result: %d candidate(s): %s",
             len(devices),
-            list(devices),
+            sorted(devices),
         )
         return devices
 
@@ -78,49 +74,88 @@ class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self,
         user_input: dict[str, Any] | None = None,
     ) -> FlowResult:
-        """Show discovered Hunter controllers."""
-        self._devices = await self._discover_devices()
-
-        if not self._devices:
-            return self.async_abort(reason="no_devices_found")
-
+        """Discover Hunter controllers, with a manual-address fallback."""
         if user_input is not None:
-            address = user_input[CONF_ADDRESS]
-            discovery = self._devices.get(address)
+            address = user_input.get(CONF_ADDRESS, "").strip().upper()
+            if not address:
+                return self.async_abort(reason="no_devices_found")
 
-            if discovery is None:
-                return self.async_abort(reason="device_not_found")
+            # If the address was discovered, retain all advertisement data.
+            info = self._devices.get(address)
+            if info is None:
+                info = self._devices.get(address.replace("-", ":"))
 
-            await self.async_set_unique_id(discovery.address)
+            await self.async_set_unique_id(address)
             self._abort_if_unique_id_configured()
 
+            # Do not require a connectable advertisement here. The actual
+            # connection layer will resolve the address through HA Bluetooth.
             return self.async_create_entry(
-                title=discovery.name or discovery.address,
+                title=(info.name if info else None) or f"Hunter BTT {address[-4:]}",
                 data={
-                    CONF_ADDRESS: discovery.address,
-                    CONF_NAME: discovery.name or "Hunter BTT",
+                    CONF_ADDRESS: address,
+                    CONF_NAME: (info.name if info else None) or "Hunter BTT",
                 },
             )
 
+        self._devices = await self._discover_devices()
+
         options = {
-            address: f"{info.name or 'Hunter BTT'} ({address})"
+            address: (
+                f"{info.name or 'Hunter BTT'} "
+                f"({address})"
+            )
             for address, info in self._devices.items()
         }
 
+        # Always include a manual-address path. This prevents discovery from
+        # being a dead end when the remote proxy sees the device but HA's
+        # matcher/cache has not retained a candidate yet.
+        schema = vol.Schema(
+            {
+                vol.Optional(CONF_ADDRESS): str,
+            }
+        )
+
+        if not self._devices:
+            _LOGGER.warning(
+                "No Hunter advertisements were found. "
+                "The Bluetooth proxy may not be forwarding the device. "
+                "Manual address entry remains available."
+            )
+            return self.async_show_form(
+                step_id="user",
+                data_schema=schema,
+                description_placeholders={
+                    "hint": "Enter the controller Bluetooth address, for example F0:5E:CD:1C:BB:B4.",
+                },
+            )
+
+        # A discovered-device selector is easier to use, while still allowing
+        # a manually entered address if the device changes advertisement form.
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_ADDRESS,
+                    description="Bluetooth address",
+                ): vol.In(options),
+            }
+        )
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
-                {vol.Required(CONF_ADDRESS): vol.In(options)}
-            ),
+            data_schema=schema,
+            description_placeholders={
+                "hint": "Select the discovered Hunter controller.",
+            },
         )
 
     async def async_step_bluetooth(
         self,
         discovery_info: BluetoothServiceInfoBleak,
     ) -> FlowResult:
-        """Handle Home Assistant's automatic Bluetooth discovery."""
-        _LOGGER.debug(
-            "Hunter automatic Bluetooth discovery: %s",
+        """Handle manifest-based Bluetooth discovery."""
+        _LOGGER.warning(
+            "Hunter Bluetooth config-flow discovery: %s",
             describe_discovery(discovery_info),
         )
 
@@ -130,10 +165,6 @@ class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         await self.async_set_unique_id(discovery_info.address)
         self._abort_if_unique_id_configured()
 
-        self.context["title_placeholders"] = {
-            "name": discovery_info.name or discovery_info.address,
-        }
-
         self._devices = {discovery_info.address: discovery_info}
         return await self.async_step_confirm()
 
@@ -141,25 +172,23 @@ class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self,
         user_input: dict[str, Any] | None = None,
     ) -> FlowResult:
-        """Confirm an automatically discovered controller."""
-        discovery = next(iter(self._devices.values()))
+        """Confirm a discovered Hunter controller."""
+        info = next(iter(self._devices.values()))
 
         if user_input is not None:
-            self._abort_if_unique_id_configured()
-
             return self.async_create_entry(
-                title=discovery.name or discovery.address,
+                title=info.name or f"Hunter BTT {info.address[-4:]}",
                 data={
-                    CONF_ADDRESS: discovery.address,
-                    CONF_NAME: discovery.name or "Hunter BTT",
+                    CONF_ADDRESS: info.address,
+                    CONF_NAME: info.name or "Hunter BTT",
                 },
             )
 
         return self.async_show_form(
             step_id="confirm",
             description_placeholders={
-                "name": discovery.name or discovery.address,
-                "address": discovery.address,
+                "name": info.name or "Hunter BTT",
+                "address": info.address,
             },
         )
 
@@ -167,9 +196,8 @@ class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self,
         user_input: dict[str, Any] | None = None,
     ) -> FlowResult:
-        """Reconfigure the display name."""
+        """Handle reconfiguration."""
         entry = self._get_reconfigure_entry()
-
         if user_input is not None:
             self.hass.config_entries.async_update_entry(
                 entry,
@@ -193,22 +221,19 @@ class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> "HunterOptionsFlow":
-        """Return options flow."""
         return HunterOptionsFlow(config_entry)
 
 
 class HunterOptionsFlow(config_entries.OptionsFlow):
-    """Handle Hunter BTT options."""
+    """Hunter options flow."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options."""
         self._entry = config_entry
 
     async def async_step_init(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> FlowResult:
-        """Handle options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
