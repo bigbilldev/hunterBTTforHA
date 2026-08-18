@@ -1,507 +1,250 @@
-"""
-coordinator.py
+"""DataUpdateCoordinator for the Hunter BTT integration.
 
-Home Assistant DataUpdateCoordinator for the Hunter BTT integration.
+The config entry stores the controller Bluetooth address.  Discovery is used
+to identify the device, but the coordinator must not require a currently
+connectable discovery record during setup.  The BLE manager/client resolves
+the stored address when a connection is required.
 
-Architecture
-
-Entities
-    │
-    ▼
-HunterDataUpdateCoordinator
-    │
-    ▼
-HunterBLEManager
-    │
-    ▼
-BLE Stack
+This matches the current HunterBLEManager interface in the project:
+    HunterBLEManager(hass=..., address=..., passcode=...)
+    add_listener(...)
+    connect()
+    disconnect()
+    refresh()
+    start_zone(...)
+    stop()
+    shutdown()
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import timedelta
-from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
 
-from homeassistant.components import bluetooth
-
-from .bluetooth.manager import HunterBLEManager
-from .const import (
-    CONF_POLL_INTERVAL,
-    DEFAULT_SCAN_INTERVAL,
-    DOMAIN,
+from .bluetooth.manager import (
+    HunterBLEManager,
+    HunterManagerError,
 )
+from .const import (
+    CONF_ADDRESS,
+    CONF_PASSCODE,
+    DEFAULT_SCAN_INTERVAL,
+)
+from .models import HunterState
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class HunterDataUpdateCoordinator(
-    DataUpdateCoordinator[dict[str, Any]]
-):
-    """
-    Coordinates all communication with the Hunter controller.
-    """
+class HunterDataUpdateCoordinator(DataUpdateCoordinator[HunterState]):
+    """Coordinate communication with a Hunter BTT controller."""
 
     def __init__(
         self,
         hass: HomeAssistant,
-        entry: ConfigEntry,
+        config_entry: ConfigEntry,
     ) -> None:
+        """Initialize the coordinator."""
 
-        self.hass = hass
-        self.entry = entry
+        self.config_entry = config_entry
 
-        self.address: str = entry.data["address"]
-        self.name: str = entry.data.get(
-            "name",
-            "Hunter BTT",
-        )
-
-        #
-        # Locate BLE discovery information.
-        #
-
-        discovery = bluetooth.async_last_service_info(
-            hass,
-            self.address,
-            connectable=True,
-        )
-
-        if discovery is None:
-            raise UpdateFailed(
-                f"Hunter controller {self.address} "
-                "is not currently discoverable."
-            )
-
-        self.manager = HunterBLEManager(
-            hass,
-            discovery,
-        )
-
-        self.manager.register_callback(
-            self._manager_updated,
-        )
-
-        interval = timedelta(
-            seconds=entry.options.get(
-                CONF_POLL_INTERVAL,
-                int(
-                    DEFAULT_SCAN_INTERVAL.total_seconds()
-                ),
-            )
+        self._address = config_entry.data[CONF_ADDRESS]
+        self._manager = HunterBLEManager(
+            hass=hass,
+            address=self._address,
+            passcode=config_entry.data.get(
+                CONF_PASSCODE,
+                "0000",
+            ),
         )
 
         super().__init__(
             hass,
             _LOGGER,
-            name=DOMAIN,
-            update_interval=interval,
+            name="Hunter BTT201",
+            update_interval=DEFAULT_SCAN_INTERVAL,
         )
 
-    # ------------------------------------------------------------------
-    # Coordinator update
-    # ------------------------------------------------------------------
+        self.data = HunterState()
 
-    async def _async_update_data(
-        self,
-    ) -> dict[str, Any]:
-        """
-        Refresh state from the controller.
-        """
-
-        try:
-
-            data = await self.manager.refresh()
-
-            return data
-
-        except Exception as err:
-
-            raise UpdateFailed(
-                str(err),
-            ) from err
-
-    # ------------------------------------------------------------------
-    # Manager callback
-    # ------------------------------------------------------------------
-
-    async def _manager_updated(self) -> None:
-        """
-        Called whenever the BLE manager updates state from
-        notifications or writes.
-
-        This avoids waiting for the polling interval.
-        """
-
-        self.async_set_updated_data(
-            self.manager.state,
+        self._remove_listener = self._manager.add_listener(
+            self._manager_state_updated,
         )
 
-    # ------------------------------------------------------------------
-    # Connection helpers
-    # ------------------------------------------------------------------
+    @property
+    def manager(self) -> HunterBLEManager:
+        """Return the BLE manager."""
+
+        return self._manager
+
+    @property
+    def address(self) -> str:
+        """Return the configured Bluetooth address."""
+
+        return self._address
 
     @property
     def connected(self) -> bool:
-        return self.manager.connected
+        """Return connection status."""
+
+        return self._manager.connected
 
     @property
-    def available(self) -> bool:
-        return (
-            self.last_update_success
-            and self.manager.connected
+    def state(self) -> HunterState:
+        """Return current controller state."""
+
+        return self.data
+
+    @property
+    def battery(self) -> int | None:
+        """Return battery percentage."""
+
+        return self.data.battery
+
+    @property
+    def active_zone(self) -> int | None:
+        """Return active zone."""
+
+        return self.data.active_zone
+
+    @property
+    def remaining_seconds(self) -> int:
+        """Return remaining runtime."""
+
+        return self.data.remaining_seconds
+
+    async def async_initialize(self) -> None:
+        """Connect and initialize the controller.
+
+        No advertisement/discoverability check is performed here.  The
+        controller was already identified by config flow; the stored BLE
+        address is now handed to the manager.
+        """
+
+        _LOGGER.info(
+            "Initializing Hunter BTT at stored address %s",
+            self._address,
         )
+
+        try:
+            await self._manager.connect()
+
+            self.data = self._manager.state
+            self.async_set_updated_data(self.data)
+
+        except Exception as err:
+            raise UpdateFailed(
+                f"Unable to connect to Hunter controller "
+                f"{self._address}: {err}"
+            ) from err
+
+    async def _async_update_data(self) -> HunterState:
+        """Refresh controller state."""
+
+        try:
+            if not self._manager.connected:
+                _LOGGER.debug(
+                    "Hunter controller %s is disconnected; reconnecting",
+                    self._address,
+                )
+                await self._manager.connect()
+
+            return await self._manager.refresh()
+
+        except ConfigEntryAuthFailed:
+            raise
+
+        except HunterManagerError as err:
+            raise UpdateFailed(str(err)) from err
+
+        except Exception as err:
+            raise UpdateFailed(
+                f"Unexpected Hunter refresh failure: {err}"
+            ) from err
 
     async def async_connect(self) -> None:
-        await self.manager.connect()
+        """Ensure the controller is connected."""
+
+        if self._manager.connected:
+            return
+
+        await self._manager.connect()
+
+        self.data = self._manager.state
+        self.async_set_updated_data(self.data)
 
     async def async_disconnect(self) -> None:
-        await self.manager.disconnect()
+        """Disconnect from the controller."""
+
+        await self._manager.disconnect()
+
+        self.data = self._manager.state
+        self.async_set_updated_data(self.data)
 
     async def async_shutdown(self) -> None:
-        """
-        Called from __init__.py during unload.
-        """
+        """Release coordinator resources."""
 
-        await self.manager.shutdown()
+        if self._remove_listener is not None:
+            self._remove_listener()
+            self._remove_listener = None
 
-    # ------------------------------------------------------------------
-    # Convenience accessors
-    # ------------------------------------------------------------------
+        await self._manager.shutdown()
 
-    @property
-    def battery(self):
-        return self.data.get("battery")
+    def _manager_state_updated(
+        self,
+        state: HunterState,
+    ) -> None:
+        """Receive notification-driven manager state updates."""
 
-    @property
-    def running(self):
-        return self.data.get(
-            "running",
-            False,
-        )
-
-    @property
-    def active_zone(self):
-        return self.data.get(
-            "active_zone",
-            0,
-        )
-
-    @property
-    def remaining_seconds(self):
-        return self.data.get(
-            "remaining_seconds",
-            0,
-        )
-
-    def zone(self, zone: int):
-        return (
-            self.data
-            .get("zones", {})
-            .get(zone, {})
-        )
-    # ------------------------------------------------------------------
-    # Manual irrigation
-    # ------------------------------------------------------------------
+        self.data = state
+        self.async_set_updated_data(state)
 
     async def async_start_zone(
         self,
         zone: int,
         runtime: int,
     ) -> None:
-        """
-        Start manual watering for a zone.
-        """
+        """Start manual watering."""
 
-        await self.manager.start_zone(
+        _LOGGER.info(
+            "Hunter START requested: zone=%d runtime=%ds",
             zone,
             runtime,
         )
 
-        await self.async_request_refresh()
+        await self._manager.start_zone(zone, runtime)
+
+        self.data = self._manager.state
+        self.async_set_updated_data(self.data)
 
     async def async_stop(self) -> None:
-        """
-        Stop all watering.
-        """
+        """Stop all watering."""
 
-        await self.manager.stop()
+        _LOGGER.info("Hunter STOP requested")
 
-        await self.async_request_refresh()
+        await self._manager.stop()
 
-    async def async_set_manual_runtime(
-        self,
-        zone: int,
-        runtime: int,
-    ) -> None:
-        """
-        Update the cached runtime for a zone.
-        """
+        self.data = self._manager.state
+        self.async_set_updated_data(self.data)
 
-        await self.manager.set_manual_runtime(
-            zone,
-            runtime,
-        )
+    async def async_refresh_battery(self) -> int | None:
+        """Refresh battery state."""
 
-        self.async_set_updated_data(
-            self.manager.state,
-        )
+        battery = await self._manager.refresh_battery()
 
-    # ------------------------------------------------------------------
-    # Timer scheduling
-    # ------------------------------------------------------------------
-
-    async def async_write_timer(
-        self,
-        zone: int,
-        schedule,
-    ) -> None:
-        """
-        Write a complete timer schedule.
-        """
-
-        await self.manager.write_timer(
-            zone,
-            schedule,
-        )
-
-        await self.async_request_refresh()
-
-    async def async_enable_timer(
-        self,
-        zone: int,
-        enabled: bool,
-    ) -> None:
-        """
-        Enable or disable timer mode.
-        """
-
-        await self.manager.enable_timer(
-            zone,
-            enabled,
-        )
-
-        await self.async_request_refresh()
-
-    # ------------------------------------------------------------------
-    # Cycling scheduling
-    # ------------------------------------------------------------------
-
-    async def async_write_cycling(
-        self,
-        zone: int,
-        schedule,
-    ) -> None:
-        """
-        Write a complete cycling schedule.
-        """
-
-        await self.manager.write_cycling(
-            zone,
-            schedule,
-        )
-
-        await self.async_request_refresh()
-
-    async def async_enable_cycling(
-        self,
-        zone: int,
-        enabled: bool,
-    ) -> None:
-        """
-        Enable or disable cycling mode.
-        """
-
-        await self.manager.enable_cycling(
-            zone,
-            enabled,
-        )
-
-        await self.async_request_refresh()
-
-    # ------------------------------------------------------------------
-    # Characteristic passthrough
-    # ------------------------------------------------------------------
-
-    async def async_read_characteristic(
-        self,
-        uuid: str,
-    ) -> bytes:
-        """
-        Read a raw GATT characteristic.
-        """
-
-        return await self.manager.read_characteristic(
-            uuid,
-        )
-
-    async def async_write_characteristic(
-        self,
-        uuid: str,
-        payload: bytes,
-    ) -> None:
-        """
-        Write a raw GATT characteristic.
-        """
-
-        await self.manager.write_characteristic(
-            uuid,
-            payload,
-        )
-
-        await self.async_request_refresh()
-
-    # ------------------------------------------------------------------
-    # Refresh helpers
-    # ------------------------------------------------------------------
-
-    async def async_refresh_zone(
-        self,
-        zone: int,
-    ):
-        """
-        Refresh a single zone.
-        """
-
-        await self.manager.refresh_zone(
-            zone,
-        )
-
-        self.async_set_updated_data(
-            self.manager.state,
-        )
-
-        return self.zone(zone)
-
-    async def async_refresh_battery(
-        self,
-    ) -> int | None:
-        """
-        Refresh only the battery level.
-        """
-
-        battery = await self.manager.refresh_battery()
-
-        self.async_set_updated_data(
-            self.manager.state,
-        )
+        self.data = self._manager.state
+        self.async_set_updated_data(self.data)
 
         return battery
 
-    # ------------------------------------------------------------------
-    # Diagnostics
-    # ------------------------------------------------------------------
-
-    @property
-    def diagnostics(self) -> dict[str, Any]:
-        """
-        Data exposed through diagnostics.py.
-        """
-
-        return self.manager.diagnostics
-
-    @property
-    def device_info(self) -> dict[str, Any]:
-        """
-        Convenience values used by entities.
-        """
-
-        return {
-            "address": self.address,
-            "name": self.name,
-            "connected": self.connected,
-            "battery": self.battery,
-            "running": self.running,
-            "active_zone": self.active_zone,
-            "remaining_seconds": (
-                self.remaining_seconds
-            ),
-        }
-
-    # ------------------------------------------------------------------
-    # Entity helpers
-    # ------------------------------------------------------------------
-
-    def is_zone_running(
-        self,
-        zone: int,
-    ) -> bool:
-        """
-        True if the specified zone is currently watering.
-        """
-
-        return (
-            self.running
-            and self.active_zone == zone
-        )
-
-    def zone_runtime(
-        self,
-        zone: int,
-    ) -> int:
-        """
-        Configured runtime for a zone.
-        """
-
-        zone_state = self.zone(zone)
-
-        return zone_state.get(
-            "runtime",
-            0,
-        )
-
-    def timer_enabled(
-        self,
-        zone: int,
-    ) -> bool:
-        """
-        Timer mode enabled.
-        """
-
-        return (
-            self.zone(zone)
-            .get("timer_enabled", False)
-        )
-
-    def cycling_enabled(
-        self,
-        zone: int,
-    ) -> bool:
-        """
-        Cycling mode enabled.
-        """
-
-        return (
-            self.zone(zone)
-            .get("cycling_enabled", False)
-        )
-
-    # ------------------------------------------------------------------
-    # Reload support
-    # ------------------------------------------------------------------
-
-    async def async_reconnect(self) -> None:
-        """
-        Force a BLE reconnect.
-        """
-
-        await self.manager.disconnect()
-        await self.manager.connect()
-
-        await self.async_request_refresh()
-
-    async def async_reset(self) -> None:
-        """
-        Clear cached data and perform a full refresh.
-        """
-
-        self.manager.clear_cache()
+    async def async_refresh_all(self) -> None:
+        """Request an immediate full refresh."""
 
         await self.async_request_refresh()
