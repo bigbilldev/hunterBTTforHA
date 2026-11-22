@@ -35,10 +35,10 @@ from .coordinator import HunterDataUpdateCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [
+    # Schedule switches are disabled until their BLE write path is implemented.
     Platform.SENSOR,
     Platform.BINARY_SENSOR,
-    Platform.SWITCH,
-    Platform.BUTTON,
+Platform.BUTTON,
     Platform.NUMBER,
 ]
 

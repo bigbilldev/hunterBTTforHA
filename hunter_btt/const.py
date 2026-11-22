@@ -12,6 +12,7 @@ from typing import Final
 DOMAIN: Final = "hunter_btt"
 NAME: Final = "Hunter BTT"
 MANUFACTURER: Final = "Hunter Industries"
+MODEL: Final = "BTT Controller"
 DEFAULT_NAME: Final = "Hunter BTT"
 
 # ---------------------------------------------------------------------------

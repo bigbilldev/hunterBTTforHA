@@ -14,7 +14,6 @@ import logging
 from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 from homeassistant.components import bluetooth
-from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
 from homeassistant.core import HomeAssistant
 
 from ..protocol.uuids import (
@@ -35,10 +34,10 @@ class HunterBLEClient:
     def __init__(
         self,
         hass: HomeAssistant,
-        discovery_info: BluetoothServiceInfoBleak,
+        address: str,
     ) -> None:
         self._hass = hass
-        self._address = discovery_info.address
+        self._address = address
         self._client: BleakClientWithServiceCache | None = None
         self._lock = asyncio.Lock()
         self._notification_callback = None
