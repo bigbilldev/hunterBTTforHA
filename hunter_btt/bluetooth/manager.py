@@ -9,7 +9,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from ..models import HunterState
-from ..protocol.uuids import BATTERY_LEVEL_UUID
+from ..protocol.uuids import BATTERY_LEVEL_UUID, COMMAND_UUID
 from ..protocol.generation import (
     FCC0_SERVICE_UUID,
     SECOND_SERVICE_UUID,
@@ -68,6 +68,47 @@ class HunterBLEManager:
     @property
     def available(self) -> bool:
         return self.connected
+
+    @property
+    def gatt_inventory(self) -> list[dict[str, object]]:
+        return self.connection.gatt_inventory
+
+    @property
+    def writable_characteristics(self) -> list[dict[str, object]]:
+        return self.connection.writable_characteristics
+
+    @property
+    def notification_status(self) -> dict[str, str]:
+        return self.connection.notification_status
+
+    @property
+    def command_properties(self) -> set[str]:
+        return self.connection.characteristic_properties(COMMAND_UUID)
+
+    @property
+    def control_ready(self) -> bool:
+        return (
+            self._generation is HunterGeneration.SECOND
+            and bool({"write", "write-without-response"} & self.command_properties)
+        )
+
+    def command_readiness_issue(self) -> str | None:
+        if self._generation is not HunterGeneration.SECOND:
+            return "Valve control is currently implemented only for second-generation controllers."
+        properties = self.command_properties
+        if not properties:
+            writable = [
+                f"{item['uuid']} (handle={item['handle']}, properties={item['properties']})"
+                for item in self.writable_characteristics
+            ]
+            return (
+                "Required FF83 command characteristic is absent from the connected GATT database. "
+                "No alternate writable characteristic will be assumed. "
+                f"Writable characteristics discovered: {writable or 'none'}."
+            )
+        if not ({"write", "write-without-response"} & properties):
+            return f"FF83 is present but not writable; properties={sorted(properties)}."
+        return None
 
     def add_listener(self, callback):
         """Register a state listener and return an unsubscribe callback."""
@@ -145,15 +186,36 @@ class HunterBLEManager:
 
             self.transaction.set_generation(self._generation)
 
-            # Android initializes the characteristic map and notification
-            # handlers after GATT service discovery. Mirror that ordering.
-            try:
-                await self.client.subscribe(self.transaction.notification)
-            except Exception as err:
+            inventory = self.gatt_inventory
+            _LOGGER.info(
+                "Hunter GATT inventory address=%s service_count=%d characteristic_count=%d",
+                self.address,
+                len(services),
+                len(inventory),
+            )
+            for item in inventory:
                 _LOGGER.debug(
-                    "Hunter notification subscription incomplete: %s",
-                    err,
+                    "Hunter GATT characteristic service=%s uuid=%s handle=%s properties=%s",
+                    item["service_uuid"],
+                    item["uuid"],
+                    item["handle"],
+                    item["properties"],
                 )
+
+            readiness_issue = self.command_readiness_issue()
+            if readiness_issue:
+                _LOGGER.warning("Hunter valve control is not ready: %s", readiness_issue)
+
+            # Do not infer that FFA0/FFA1 are aliases for FF83. Keep the
+            # native command UUID authoritative until packet-level evidence
+            # establishes any transport-specific mapping.
+            notification_status = await self.client.subscribe(
+                self.transaction.notification
+            )
+            _LOGGER.info(
+                "Hunter notification subscription results: %s",
+                notification_status,
+            )
 
             self.connected = True
             await self._notify_state_changed()
@@ -206,6 +268,9 @@ class HunterBLEManager:
 
     async def start_zone(self, zone: int, runtime: int) -> None:
         await self.ensure_connected()
+        readiness_issue = self.command_readiness_issue()
+        if readiness_issue:
+            raise HunterManagerError(readiness_issue)
         if runtime <= 0:
             raise HunterManagerError("Runtime must be greater than zero.")
         if zone < 1 or zone > self._capabilities.zone_count:
@@ -218,6 +283,9 @@ class HunterBLEManager:
 
     async def stop(self) -> None:
         await self.ensure_connected()
+        readiness_issue = self.command_readiness_issue()
+        if readiness_issue:
+            raise HunterManagerError(readiness_issue)
         await self.transaction.stop()
         self.state["running"] = False
         self.state["active_zone"] = 0

@@ -21,11 +21,11 @@ from ..protocol.uuids import (
     NOTIFY_UUID,
     PASSCODE_UUID,
     STATUS_NOTIFY_UUID,
+    COMMAND_UUID,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-COMMAND_UUID = "0000ff83-0000-1000-8000-00805f9b34fb"
 
 
 class HunterBLEClient:
@@ -41,6 +41,7 @@ class HunterBLEClient:
         self._client: BleakClientWithServiceCache | None = None
         self._lock = asyncio.Lock()
         self._notification_callback = None
+        self._notification_status: dict[str, str] = {}
 
     @property
     def connected(self) -> bool:
@@ -54,6 +55,49 @@ class HunterBLEClient:
             str(service.uuid).strip().lower()
             for service in self._client.services
         }
+
+    @property
+    def gatt_inventory(self) -> list[dict[str, object]]:
+        """Return every discovered characteristic with handle and properties."""
+        if self._client is None:
+            return []
+        inventory: list[dict[str, object]] = []
+        for service in self._client.services:
+            service_uuid = str(service.uuid).strip().lower()
+            for characteristic in service.characteristics:
+                inventory.append(
+                    {
+                        "service_uuid": service_uuid,
+                        "uuid": str(characteristic.uuid).strip().lower(),
+                        "handle": getattr(characteristic, "handle", None),
+                        "properties": sorted(
+                            str(prop).strip().lower()
+                            for prop in characteristic.properties
+                        ),
+                    }
+                )
+        return sorted(
+            inventory,
+            key=lambda item: (
+                str(item["service_uuid"]),
+                item["handle"] if isinstance(item["handle"], int) else -1,
+                str(item["uuid"]),
+            ),
+        )
+
+    @property
+    def writable_characteristics(self) -> list[dict[str, object]]:
+        """Return discovered characteristics that advertise a write property."""
+        return [
+            item
+            for item in self.gatt_inventory
+            if {"write", "write-without-response"} & set(item["properties"])
+        ]
+
+    @property
+    def notification_status(self) -> dict[str, str]:
+        """Return the latest per-characteristic notification subscription result."""
+        return dict(self._notification_status)
 
     @property
     def characteristic_uuids(self) -> set[str]:
@@ -216,6 +260,12 @@ class HunterBLEClient:
         if not self.connected:
             await self.connect()
         assert self._client is not None
+        properties = self.characteristic_properties(uuid)
+        if not ({"notify", "indicate"} & properties):
+            raise BleakError(
+                f"Characteristic {uuid} does not support notifications or indications; "
+                f"properties={sorted(properties)}"
+            )
         if self._notification_callback is None:
             raise BleakError("No Hunter notification callback registered.")
 
@@ -238,21 +288,43 @@ class HunterBLEClient:
         except Exception:
             _LOGGER.debug("Unable to unsubscribe %s", uuid, exc_info=True)
 
-    async def subscribe(self, callback=None) -> None:
+    async def subscribe(self, callback=None) -> dict[str, str]:
+        """Attempt each known notification characteristic independently."""
         if callback is not None:
             self._notification_callback = callback
         if not self.connected:
             await self.connect()
+
+        self._notification_status = {}
         for uuid in (NOTIFY_UUID, COUNTDOWN_UUID, STATUS_NOTIFY_UUID):
-            if uuid in self.characteristic_uuids:
+            properties = self.characteristic_properties(uuid)
+            if not properties:
+                self._notification_status[uuid] = "missing"
+                continue
+            if not ({"notify", "indicate"} & properties):
+                self._notification_status[uuid] = (
+                    f"unsupported properties={','.join(sorted(properties))}"
+                )
+                continue
+            try:
                 await self.start_notify(uuid)
+                self._notification_status[uuid] = "subscribed"
+            except Exception as err:
+                self._notification_status[uuid] = f"failed: {err}"
+                _LOGGER.warning(
+                    "Hunter notification subscription failed uuid=%s: %s",
+                    uuid,
+                    err,
+                )
+        return self.notification_status
 
     async def unsubscribe(self) -> None:
         if not self.connected:
             return
-        for uuid in (NOTIFY_UUID, COUNTDOWN_UUID, STATUS_NOTIFY_UUID):
-            if uuid in self.characteristic_uuids:
+        for uuid, status in tuple(self._notification_status.items()):
+            if status == "subscribed":
                 await self.stop_notify(uuid)
+        self._notification_status = {}
 
     async def authenticate(self, passcode: bytes) -> None:
         await self.write(PASSCODE_UUID, passcode, response=True)
