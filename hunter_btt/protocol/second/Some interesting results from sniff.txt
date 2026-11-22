@@ -1,0 +1,62 @@
+Some interesting results from sniffing.
+
+Custom service: FF80 with characteristics FF81 through FF8F
+Battery service: 180F with battery level 2A19
+Firmware service: 180A with firmware revision 2A26
+On connect, notifications should be enabled for FF82, FF8A, and FF8F
+FF83 is the manual command channel
+FF84 appears to be time sync
+FF86 is used for Zone 1 related config / duration / schedule-day settings
+FF87 is used for a Zone 1 schedule block
+FF8B is used for Zone 2 related config / duration / schedule-day settings
+FF8D is used for a Zone 2 schedule block
+FF81 is used for passcode related data and can be ignored
+
+Hunter provides characteristic handles.
+Awaits enablement of notifications on FF82, FF8A, and FF8F.
+FF82 appears to be value position status (open or closed)
+
+
+Manual Start appears to be
+Write FF86 or FF8B duration.
+Receive Write Response FF86
+Write FF83 arm/run payload 010001010101010000000000
+Receive Write Response FF83
+Receive a set of Handle Value Notifications:
+	FF82 payload 0100010101000101000005018000    <--appears to be START/OPEN confirmation
+	A series of individual FF8A payloads similar to 0800000000000000000000093b000000, 0800000000000000000000093a000000  Which appear to be countdown seconds
+	At the end of a set countdown based on cycle settings (FF86) 
+	Receive Handle Value Notification FF82 payload 0100010100000101000001018000   <--appears to be STOP/CLOSED confirmation
+	FFA3 payload of 013203440e000000000a
+	FF82 payload of 0100010100000101000001018000
+
+Manual stop
+Write FF83 stop payload 010002010002010000000000
+Receive Write Response FF83
+Receive a set of Handle Value Notifications:
+	FF8a payload 08000000000000000000000a00000000
+	FF82 payload 0100010100000101000001018000   <--appears to be STOP/CLOSED confirmation
+	FFA3 payload 01320343120000000033
+	FF82 payload 0100010100000101000001018000
+
+Battery Strategy
+BLE is disconnected by default.
+Every active BLE session refreshes battery once.
+Background battery refresh runs once every 24 hours by default.
+There is no aggressive polling and no permanent BLE subscription.
+
+Schedule Paths
+Zone 1 timer: FF86 config + FF87 block
+Zone 1 cycling: FF86 config + FF88 block
+Zone 2 timer: FF8B config + FF8C block
+Zone 2 cycling: FF8B config + FF8D block
+
+Example duration payloads;
+    "60_seconds": "04:01:7f:ff:ff:ff:ff:00:ff:ff:ff:00:01:00:00:1e:00"
+    "35_seconds": "04:01:7f:ff:ff:ff:ff:00:ff:ff:ff:00:00:23:00:1e:00"
+    "10_seconds": "04:01:7f:ff:ff:ff:ff:00:ff:ff:ff:00:00:0a:00:1e:00"
+    "10_minutes": "04:01:7f:ff:ff:ff:ff:00:ff:ff:ff:00:0a:00:00:1e:00"
+    "10_hours"  : "04:01:7f:ff:ff:ff:ff:00:ff:ff:ff:0a:00:00:00:1e:00"
+
+
+
