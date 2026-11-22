@@ -68,6 +68,7 @@ async def async_get_config_entry_diagnostics(
         ),
         "device": await _device(manager),
         "connection": await _connection(manager),
+        "gatt": _gatt(manager),
         "coordinator": await _coordinator(
             coordinator,
         ),
