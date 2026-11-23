@@ -69,6 +69,14 @@ class HunterDataUpdateCoordinator(DataUpdateCoordinator[HunterState]):
         return self._manager.connected
 
     @property
+    def protocol_initialized(self) -> bool:
+        return self._manager.protocol_initialized
+
+    @property
+    def control_ready(self) -> bool:
+        return self._manager.control_ready
+
+    @property
     def state(self) -> HunterState:
         return self.data
 
