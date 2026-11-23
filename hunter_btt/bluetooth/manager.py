@@ -105,7 +105,7 @@ class HunterBLEManager:
         return (
             self._generation is HunterGeneration.SECOND
             and self.protocol_initialized
-            and bool({"write", "write-without-response"} & self.command_properties)
+            and "write" in self.command_properties
         )
 
     def command_readiness_issue(self) -> str | None:
@@ -122,8 +122,11 @@ class HunterBLEManager:
                 "No alternate writable characteristic will be assumed. "
                 f"Writable characteristics discovered: {writable or 'none'}."
             )
-        if not ({"write", "write-without-response"} & properties):
-            return f"FF83 is present but not writable; properties={sorted(properties)}."
+        if "write" not in properties:
+            return (
+                "FF83 does not advertise write-with-response, which is required "
+                f"for the captured Android command path; properties={sorted(properties)}."
+            )
         if not self.protocol_initialized:
             return "Second-generation controller initialization has not completed successfully."
         return None
