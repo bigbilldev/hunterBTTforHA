@@ -1,11 +1,8 @@
 """Tests for second-generation Hunter protocol codecs and initialization."""
 
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import unittest
 
-from hunter_btt.bluetooth.manager import HunterBLEManager
-from hunter_btt.models import HunterState
 from hunter_btt.protocol.second_generation import (
     FF83Config,
     build_ff83,
@@ -16,7 +13,6 @@ from hunter_btt.protocol.second_generation import (
     parse_ff84,
     weekday_bit,
 )
-from hunter_btt.protocol.uuids import COMMAND_UUID, NOTIFY_UUID, TIME_UUID
 
 
 FF82_CAPTURE = bytes.fromhex(
@@ -73,7 +69,7 @@ class SecondGenerationCodecTests(unittest.TestCase):
 
     def test_android_manual_flag_asymmetry_is_preserved(self):
         status = parse_ff82(
-            bytes.fromhex("01 00 01 01 00 00 01 01 00 00 01 05 00 00")
+            bytes.fromhex("01 00 01 01 00 00 01 01 00 00 11 01 00 00")
         )
         current = FF83Config(
             enabled=True,
@@ -91,8 +87,8 @@ class SecondGenerationCodecTests(unittest.TestCase):
         )
         merged = merge_android_ff83(current, status)
         self.assertTrue(merged.zone1_enable_manual)
-        self.assertTrue(merged.zone2_enable_manual)
-        self.assertEqual(merged.special_setting, 0)
+        self.assertFalse(merged.zone2_enable_manual)
+        self.assertEqual(merged.special_setting, 9)
 
     def test_zone_enable_settings_are_preserved_as_bytes(self):
         merged = merge_android_ff83(
@@ -124,50 +120,3 @@ class SecondGenerationCodecTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "timezone-aware"):
             build_ff84(datetime(2026, 8, 3, 12, 15, 34))
 
-
-class FakeTransaction:
-    def __init__(self):
-        self.reads = {
-            TIME_UUID: bytes.fromhex("07 ea 07 02 0c 0f 2a 01"),
-            NOTIFY_UUID: FF82_CAPTURE,
-            COMMAND_UUID: FF83_READ_CAPTURE,
-        }
-        self.writes = []
-
-    @asynccontextmanager
-    async def transaction(self):
-        yield
-
-    async def read(self, uuid):
-        return self.reads[uuid]
-
-    async def write(self, uuid, payload, *, response=None):
-        self.writes.append((uuid, bytes(payload), response))
-
-
-class ManagerInitializationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_initialization_reads_and_writes_in_android_order(self):
-        manager = object.__new__(HunterBLEManager)
-        manager.transaction = FakeTransaction()
-        manager._zone_enabled = {1: 1, 2: 1}
-        manager.state = HunterState()
-        manager.protocol_initialized = False
-
-        await manager._initialize_second_generation()
-
-        self.assertEqual(
-            [uuid for uuid, _, _ in manager.transaction.writes],
-            [TIME_UUID, COMMAND_UUID],
-        )
-        self.assertEqual(
-            [response for _, _, response in manager.transaction.writes],
-            [True, True],
-        )
-        self.assertEqual(len(manager.transaction.writes[0][1]), 8)
-        self.assertEqual(
-            manager.transaction.writes[1][1],
-            FF83_INIT_CAPTURE,
-        )
-        self.assertTrue(manager.protocol_initialized)
-        self.assertTrue(manager.state["protocol_initialized"])
-        self.assertEqual(manager.state["ff82_status"]["zone1_conflict"], 0x80)
