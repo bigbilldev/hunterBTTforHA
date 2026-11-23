@@ -151,6 +151,33 @@ def merge_android_ff83(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class FF84Clock:
+    """Controller clock read from FF84."""
+
+    year: int
+    month: int
+    day: int
+    hour: int
+    minute: int
+    second: int
+    week: int
+
+
+def parse_ff84(payload: bytes) -> FF84Clock:
+    """Decode the eight-byte FF84 clock record."""
+    _require_length(payload, 8, "FF84")
+    return FF84Clock(
+        year=int.from_bytes(payload[0:2], "big"),
+        month=payload[2],
+        day=payload[3],
+        hour=payload[4],
+        minute=payload[5],
+        second=payload[6],
+        week=payload[7],
+    )
+
+
 def weekday_bit(value: datetime) -> int:
     """Return Android's weekday bit: Monday=1 ... Sunday=64."""
     return 1 << value.weekday()
