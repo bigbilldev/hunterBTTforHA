@@ -8,10 +8,11 @@ Second-generation manual control follows the captured Android BLE sequence:
 STOP is one FF83 write using the captured STOP command. No FF83 read is
 performed before either operation.
 
-The Android capture also contains earlier FF81, FF84, and FF83 writes during
-connection initialization. Their semantics are not yet modeled. In particular,
-the observed 14-byte FF81 value must not be treated as a passcode or hard-coded:
-it differs from the four-byte serializer in the separately inspected 6.1.7 APK.
+Second-generation connection initialization is performed by the BLE manager
+using the FF82/FF83/FF84 codecs. FF81 remains intentionally excluded: the
+observed 14-byte FF81 value must not be treated as a passcode or hard-coded
+because it differs from the four-byte serializer in the separately inspected
+6.1.7 APK.
 """
 
 from __future__ import annotations
