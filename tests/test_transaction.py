@@ -2,6 +2,8 @@
 
 import unittest
 
+from bleak.exc import BleakError
+
 from hunter_btt.bluetooth.transaction import (
     HunterTransactionEngine,
     TransactionError,
@@ -18,16 +20,22 @@ from hunter_btt.protocol.uuids import (
 
 
 class FakeClient:
-    def __init__(self):
+    def __init__(self, write_error=None):
         self.writes = []
+        self.write_error = write_error
+
+    def characteristic_handle(self, uuid):
+        return 31 if uuid == ZONE1_CONFIG_UUID else 25
 
     async def write(self, uuid, payload, response=None):
         self.writes.append((uuid, bytes(payload), response))
+        if self.write_error is not None:
+            raise self.write_error
 
 
 class FakeConnection:
-    def __init__(self):
-        self.client = FakeClient()
+    def __init__(self, write_error=None):
+        self.client = FakeClient(write_error=write_error)
         self.ensure_calls = 0
         self.reconnect_calls = 0
 
@@ -128,6 +136,30 @@ class TransactionSequenceTests(unittest.IsolatedAsyncioTestCase):
                 )
             ],
         )
+
+    async def test_att_write_not_permitted_fails_without_retry_or_reconnect(self):
+        self.connection.client.write_error = BleakError(
+            "handle=31 error=3 description=Write not permitted"
+        )
+
+        with self.assertRaisesRegex(
+            TransactionError,
+            "ATT 0x03 Write Not Permitted",
+        ):
+            await self.engine.start_zone(1, 10)
+
+        self.assertEqual(len(self.connection.client.writes), 1)
+        self.assertEqual(self.connection.reconnect_calls, 0)
+        self.assertEqual(self.connection.client.writes[0][2], True)
+
+    async def test_other_bleak_errors_keep_retry_behavior(self):
+        self.connection.client.write_error = BleakError("temporary transport failure")
+
+        with self.assertRaises(TransactionError):
+            await self.engine.start_zone(1, 10)
+
+        self.assertEqual(len(self.connection.client.writes), 3)
+        self.assertEqual(self.connection.reconnect_calls, 2)
 
     async def test_invalid_zone_does_not_write(self):
         with self.assertRaises(TransactionError):

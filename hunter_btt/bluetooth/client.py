@@ -109,6 +109,18 @@ class HunterBLEClient:
             for characteristic in service.characteristics
         }
 
+    def characteristic_handle(self, uuid: str) -> int | None:
+        """Return the discovered ATT value handle for a characteristic UUID."""
+        target = str(uuid).strip().lower()
+        if self._client is None:
+            return None
+        for service in self._client.services:
+            for characteristic in service.characteristics:
+                if str(characteristic.uuid).strip().lower() == target:
+                    handle = getattr(characteristic, "handle", None)
+                    return handle if isinstance(handle, int) else None
+        return None
+
     def characteristic_properties(self, uuid: str) -> set[str]:
         """Return properties reported by the connected GATT database."""
         target = str(uuid).strip().lower()
