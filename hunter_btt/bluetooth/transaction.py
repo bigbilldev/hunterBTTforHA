@@ -185,21 +185,8 @@ class HunterTransactionEngine:
                     "Second-generation FF83 writes must contain exactly 12 bytes."
                 )
 
-        handle: int | None = None
-
         async def operation() -> None:
-            nonlocal handle
             await self._connection.ensure_connection()
-            handle_getter = getattr(
-                self._connection.client,
-                "characteristic_handle",
-                None,
-            )
-            handle = (
-                handle_getter(target)
-                if callable(handle_getter)
-                else None
-            )
             await self._connection.client.write(
                 uuid,
                 payload,
@@ -209,7 +196,6 @@ class HunterTransactionEngine:
         await self._retry(
             operation,
             uuid=target,
-            handle=handle,
             response=response,
             payload_length=len(payload),
         )
@@ -295,7 +281,6 @@ class HunterTransactionEngine:
         func: Callable[[], Awaitable[None]],
         *,
         uuid: str | None = None,
-        handle: int | None = None,
         response: bool | None = None,
         payload_length: int | None = None,
     ) -> None:
@@ -312,6 +297,16 @@ class HunterTransactionEngine:
             except BleakError as err:
                 last_error = err
                 if _is_att_write_not_permitted(err):
+                    handle_getter = getattr(
+                        self._connection.client,
+                        "characteristic_handle",
+                        None,
+                    )
+                    handle = (
+                        handle_getter(uuid)
+                        if uuid is not None and callable(handle_getter)
+                        else None
+                    )
                     _LOGGER.error(
                         "Hunter BLE write rejected by controller: "
                         "uuid=%s handle=%s mode=%s payload_len=%s "
@@ -327,6 +322,16 @@ class HunterTransactionEngine:
                         "(ATT 0x03 Write Not Permitted); retry suppressed."
                     ) from err
 
+                handle_getter = getattr(
+                    self._connection.client,
+                    "characteristic_handle",
+                    None,
+                )
+                handle = (
+                    handle_getter(uuid)
+                    if uuid is not None and callable(handle_getter)
+                    else None
+                )
                 _LOGGER.warning(
                     "BLE transaction failed uuid=%s handle=%s mode=%s "
                     "payload_len=%s attempt=%s/%s: %s",
