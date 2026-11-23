@@ -1,11 +1,12 @@
 """Hunter BTT transaction engine.
 
-Second-generation START/STOP is modeled on the decompiled Android
-Second_83_Protocol.  The Android wrapper constructs a fresh Second_83 object,
-serializes its 12 fields, and submits that object to the BLE write path. It
-does not perform a prerequisite FF83 read.
+Second-generation manual control follows the captured Android BLE sequence:
+1. Write the requested runtime to FF86 (zone 1) or FF8B (zone 2).
+2. Await the GATT write response.
+3. Write the captured 12-byte ARM command to FF83 and await its response.
 
-Therefore this implementation NEVER reads FF83 before START/STOP.
+STOP is one FF83 write using the captured STOP command. No FF83 read is
+performed before either operation.
 """
 
 from __future__ import annotations
@@ -18,13 +19,28 @@ from typing import Awaitable, Callable
 from bleak.exc import BleakError
 
 from ..protocol.generation import HunterGeneration
-from ..protocol.uuids import COMMAND_UUID
+from ..protocol.uuids import (
+    COMMAND_UUID,
+    ZONE_CONFIG_UUID,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 FF83_UUID = COMMAND_UUID
 MAX_RUNTIME = 3600
 MAX_RETRIES = 2
+
+# Captured manual ARM and STOP writes from
+# protocol/second/Some interesting results from sniff.txt.
+START_ARM_PACKET = bytes.fromhex("01 00 01 01 01 01 01 00 00 00 00 00")
+STOP_PACKET = bytes.fromhex("01 00 02 01 00 02 01 00 00 00 00 00")
+
+# Captured FF86 duration-write structure. The runtime occupies zmHour,
+# zmMinute and zmSecond (bytes 11..13) in Second_86_Protocol.a().
+# The remaining fields are retained from the observed 10s/35s captures.
+_DURATION_TEMPLATE = bytes.fromhex(
+    "04 01 7f ff ff ff ff 00 ff ff ff 00 00 00 00 1e 00"
+)
 
 
 class TransactionError(RuntimeError):
@@ -43,91 +59,40 @@ def _hms(seconds: int) -> tuple[int, int, int]:
     return hours, minutes, seconds
 
 
-def _encode_second_83(
-    *,
-    enabled: bool,
-    suspend_watering: int,
-    zone1_enabled: int,
-    zone1_mode: int,
-    zone1_manual: bool,
-    zone2_enabled: int,
-    zone2_mode: int,
-    zone2_manual: bool,
-    run_seconds: int,
-    special_setting: int,
-) -> bytes:
-    """Encode Second_83_Protocol.a() field order exactly.
+def build_zone_duration_packet(runtime_seconds: int) -> bytes:
+    """Encode the captured 17-byte Second_86 manual duration packet.
 
-    Source: ais/Second_83_Protocol.java:
-      enabled
-      suspendWatering
-      zone1Enabled
-      zone1Mode
-      zone1EnableManual
-      zone2Enabled
-      zone2Mode
-      zone2EnableManual
-      runAllHH
-      runAllMM
-      runAllSS
-      specialSetting
+    Source field order: ais/Second_86_Protocol.java. Captured examples for
+    10 seconds, 35 seconds, 10 minutes and 10 hours place the runtime in
+    zmHour/zmMinute/zmSecond (offsets 11, 12 and 13).
     """
-    hh, mm, ss = _hms(run_seconds)
-    return bytes(
-        (
-            1 if enabled else 0,
-            suspend_watering & 0xFF,
-            zone1_enabled & 0xFF,
-            zone1_mode & 0xFF,
-            1 if zone1_manual else 0,
-            zone2_enabled & 0xFF,
-            zone2_mode & 0xFF,
-            1 if zone2_manual else 0,
-            hh,
-            mm,
-            ss,
-            special_setting & 0xFF,
-        )
-    )
-
-
-def build_start_packet(zone: int, runtime_seconds: int) -> bytes:
-    """Build a complete Android Second_83 START state."""
-    if zone not in (1, 2):
-        raise TransactionError(f"Unsupported zone {zone}.")
     if not 0 < runtime_seconds <= MAX_RUNTIME:
         raise TransactionError(
             f"Runtime must be between 1 and {MAX_RUNTIME} seconds."
         )
+    hours, minutes, seconds = _hms(runtime_seconds)
+    packet = bytearray(_DURATION_TEMPLATE)
+    packet[11:14] = bytes((hours, minutes, seconds))
+    return bytes(packet)
 
-    return _encode_second_83(
-        enabled=True,
-        suspend_watering=0,
-        zone1_enabled=1 if zone == 1 else 0,
-        zone1_mode=2 if zone == 1 else 0,
-        zone1_manual=zone == 1,
-        zone2_enabled=1 if zone == 2 else 0,
-        zone2_mode=2 if zone == 2 else 0,
-        zone2_manual=zone == 2,
-        run_seconds=runtime_seconds,
-        special_setting=0,
-    )
+
+def build_start_arm_packet(zone: int, runtime_seconds: int) -> bytes:
+    """Return the captured FF83 ARM payload after validating the request.
+
+    The duration is sent separately to the zone's FF86/FF8B characteristic.
+    The captured FF83 ARM packet is identical for either zone.
+    """
+    if zone not in (1, 2):
+        raise TransactionError(f"Unsupported zone {zone}.")
+    # Validate duration here as well, so callers cannot build an ARM command
+    # for an invalid runtime without also building the duration packet.
+    build_zone_duration_packet(runtime_seconds)
+    return START_ARM_PACKET
 
 
 def build_stop_packet() -> bytes:
-    """Build a complete Android Second_83 STOP state."""
-    return _encode_second_83(
-        enabled=False,
-        suspend_watering=0,
-        zone1_enabled=0,
-        zone1_mode=0,
-        zone1_manual=False,
-        zone2_enabled=0,
-        zone2_mode=0,
-        zone2_manual=False,
-        run_seconds=0,
-        special_setting=0,
-    )
+    """Return the captured single-write FF83 STOP payload."""
+    return STOP_PACKET
 
 
 class HunterTransactionEngine:
@@ -147,9 +112,7 @@ class HunterTransactionEngine:
     def set_generation(self, generation) -> None:
         value = getattr(generation, "value", generation)
         try:
-            self._generation = HunterGeneration(
-                str(value).strip().lower()
-            )
+            self._generation = HunterGeneration(str(value).strip().lower())
         except ValueError:
             self._generation = HunterGeneration.UNKNOWN
 
@@ -215,44 +178,45 @@ class HunterTransactionEngine:
         await self._retry(operation)
 
     async def start_zone(self, zone: int, runtime_seconds: int) -> None:
-        """Start a zone using one Android-style FF83 write."""
+        """Start one zone using its duration characteristic, then FF83 ARM."""
         if self._generation is not HunterGeneration.SECOND:
             raise TransactionError(
                 "START currently requires the second-generation protocol."
             )
+        if zone not in ZONE_CONFIG_UUID:
+            raise TransactionError(f"Unsupported zone {zone}.")
 
-        payload = build_start_packet(zone, runtime_seconds)
+        duration_payload = build_zone_duration_packet(runtime_seconds)
+        arm_payload = build_start_arm_packet(zone, runtime_seconds)
+        config_uuid = ZONE_CONFIG_UUID[zone]
+
         _LOGGER.info(
-            "SECOND START: FF83 write=%s (no FF83 read)",
-            payload.hex(" "),
+            "SECOND START: zone=%d duration_uuid=%s duration_write=%s "
+            "then FF83 arm_write=%s",
+            zone,
+            config_uuid,
+            duration_payload.hex(" "),
+            arm_payload.hex(" "),
         )
 
         async with self.transaction():
-            await self.write(
-                FF83_UUID,
-                payload,
-                response=True,
-            )
+            # A response write ensures the FF86/FF8B write has completed
+            # before the ARM command is issued, matching the captured order.
+            await self.write(config_uuid, duration_payload, response=True)
+            await self.write(FF83_UUID, arm_payload, response=True)
 
     async def stop(self) -> None:
-        """Stop watering using one Android-style FF83 write."""
+        """Stop watering with one captured FF83 STOP write."""
         if self._generation is not HunterGeneration.SECOND:
             raise TransactionError(
                 "STOP currently requires the second-generation protocol."
             )
 
         payload = build_stop_packet()
-        _LOGGER.info(
-            "SECOND STOP: FF83 write=%s (no FF83 read)",
-            payload.hex(" "),
-        )
+        _LOGGER.info("SECOND STOP: FF83 write=%s", payload.hex(" "))
 
         async with self.transaction():
-            await self.write(
-                FF83_UUID,
-                payload,
-                response=True,
-            )
+            await self.write(FF83_UUID, payload, response=True)
 
     async def wait_for_ack(self, timeout: float = 5.0) -> bytes:
         try:
