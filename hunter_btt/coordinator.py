@@ -28,6 +28,18 @@ class HunterDataUpdateCoordinator(DataUpdateCoordinator[HunterState]):
             hass=hass,
             address=self._address,
             passcode=config_entry.data.get(CONF_PASSCODE, "0000"),
+            zone1_enabled=int(
+                config_entry.options.get(
+                    "zone1_enabled",
+                    config_entry.data.get("zone1_enabled", 1),
+                )
+            ),
+            zone2_enabled=int(
+                config_entry.options.get(
+                    "zone2_enabled",
+                    config_entry.data.get("zone2_enabled", 1),
+                )
+            ),
         )
         self.data = self._manager.state
         self._remove_listener = None
