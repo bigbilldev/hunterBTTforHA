@@ -8,9 +8,8 @@ from dataclasses import asdict
 from datetime import timedelta
 from typing import Any
 
-from homeassistant.util import dt as dt_util
-
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from ..models import HunterState
 from ..protocol.second_generation import (
@@ -221,10 +220,6 @@ class HunterBLEManager:
                     item["properties"],
                 )
 
-            readiness_issue = self.command_readiness_issue()
-            if readiness_issue:
-                _LOGGER.warning("Hunter valve control is not ready: %s", readiness_issue)
-
             # Do not infer that FFA0/FFA1 are aliases for FF83. Keep the
             # native command UUID authoritative until packet-level evidence
             # establishes any transport-specific mapping.
@@ -241,7 +236,12 @@ class HunterBLEManager:
             else:
                 self.protocol_initialized = True
 
+            readiness_issue = self.command_readiness_issue()
+            if readiness_issue:
+                _LOGGER.warning("Hunter valve control is not ready: %s", readiness_issue)
+
             self.connected = True
+            self.state["protocol_initialized"] = self.protocol_initialized
             await self._notify_state_changed()
 
             _LOGGER.info(
@@ -321,6 +321,7 @@ class HunterBLEManager:
         await self.connection.disconnect()
         self.connected = False
         self.protocol_initialized = False
+        self.state["protocol_initialized"] = False
         self.transaction.set_generation(HunterGeneration.UNKNOWN)
         await self._notify_state_changed()
 
