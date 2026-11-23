@@ -7,6 +7,11 @@ Second-generation manual control follows the captured Android BLE sequence:
 
 STOP is one FF83 write using the captured STOP command. No FF83 read is
 performed before either operation.
+
+The Android capture also contains earlier FF81, FF84, and FF83 writes during
+connection initialization. Their semantics are not yet modeled. In particular,
+the observed 14-byte FF81 value must not be treated as a passcode or hard-coded:
+it differs from the four-byte serializer in the separately inspected 6.1.7 APK.
 """
 
 from __future__ import annotations
@@ -37,7 +42,9 @@ STOP_PACKET = bytes.fromhex("01 00 02 01 00 02 01 00 00 00 00 00")
 
 # Captured FF86 duration-write structure. The runtime occupies zmHour,
 # zmMinute and zmSecond (bytes 11..13) in Second_86_Protocol.a().
-# The remaining fields are retained from the observed 10s/35s captures.
+# The capture confirms this 0x7f ztmDays variant for a 10-minute run. It also
+# contains a successful 10-second run with byte 2 set to 0x04; the reason for
+# that state difference is unresolved, so do not infer that 0x7f is universal.
 _DURATION_TEMPLATE = bytes.fromhex(
     "04 01 7f ff ff ff ff 00 ff ff ff 00 00 00 00 1e 00"
 )

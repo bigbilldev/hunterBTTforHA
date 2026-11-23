@@ -53,6 +53,16 @@ class DurationPacketTests(unittest.TestCase):
             bytes.fromhex("04 01 7f ff ff ff ff 00 ff ff ff 00 00 0a 00 1e 00"),
         )
 
+    def test_pcap_captured_ten_minute_packet(self):
+        # Android capture: FF86 Write Request followed by a successful
+        # Write Response; countdown notification starts at 09:59.
+        self.assertEqual(
+            build_zone_duration_packet(600),
+            bytes.fromhex(
+                "04 01 7f ff ff ff ff 00 ff ff ff 00 0a 00 00 1e 00"
+            ),
+        )
+
     def test_captured_thirty_five_second_packet(self):
         self.assertEqual(
             build_zone_duration_packet(35),
