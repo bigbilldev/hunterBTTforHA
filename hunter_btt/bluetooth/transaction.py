@@ -185,16 +185,27 @@ class HunterTransactionEngine:
                     "Second-generation FF83 writes must contain exactly 12 bytes."
                 )
 
+        handle: int | None = None
+
         async def operation() -> None:
+            nonlocal handle
             await self._connection.ensure_connection()
+            handle_getter = getattr(
+                self._connection.client,
+                "characteristic_handle",
+                None,
+            )
+            handle = (
+                handle_getter(target)
+                if callable(handle_getter)
+                else None
+            )
             await self._connection.client.write(
                 uuid,
                 payload,
                 response=response,
             )
 
-        handle_getter = getattr(self._connection.client, "characteristic_handle", None)
-        handle = handle_getter(target) if callable(handle_getter) else None
         await self._retry(
             operation,
             uuid=target,
