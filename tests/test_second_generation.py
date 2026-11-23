@@ -2,7 +2,6 @@
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from types import SimpleNamespace
 import unittest
 
 from hunter_btt.bluetooth.manager import HunterBLEManager
