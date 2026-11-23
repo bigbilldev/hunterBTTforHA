@@ -152,6 +152,15 @@ class TransactionSequenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.connection.reconnect_calls, 0)
         self.assertEqual(self.connection.client.writes[0][2], True)
 
+    async def test_other_bleak_errors_keep_retry_behavior(self):
+        self.connection.client.write_error = BleakError("temporary transport failure")
+
+        with self.assertRaises(TransactionError):
+            await self.engine.start_zone(1, 10)
+
+        self.assertEqual(len(self.connection.client.writes), 3)
+        self.assertEqual(self.connection.reconnect_calls, 2)
+
     async def test_invalid_zone_does_not_write(self):
         with self.assertRaises(TransactionError):
             await self.engine.start_zone(3, 10)
