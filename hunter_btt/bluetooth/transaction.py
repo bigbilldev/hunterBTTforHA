@@ -51,6 +51,24 @@ class TransactionTimeout(TransactionError):
     """A Hunter BLE transaction timed out."""
 
 
+def _is_att_write_not_permitted(error: BaseException) -> bool:
+    """Identify the controller's permanent ATT Write Not Permitted rejection."""
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        message = str(current).casefold()
+        if "write not permitted" in message:
+            return True
+        if (
+            ("error=3" in message or "error = 3" in message or "0x03" in message)
+            and ("att" in message or "write" in message)
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _hms(seconds: int) -> tuple[int, int, int]:
     hours, remainder = divmod(seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
@@ -175,7 +193,15 @@ class HunterTransactionEngine:
                 response=response,
             )
 
-        await self._retry(operation)
+        handle_getter = getattr(self._connection.client, "characteristic_handle", None)
+        handle = handle_getter(target) if callable(handle_getter) else None
+        await self._retry(
+            operation,
+            uuid=target,
+            handle=handle,
+            response=response,
+            payload_length=len(payload),
+        )
 
     async def start_zone(self, zone: int, runtime_seconds: int) -> None:
         """Start one zone using its duration characteristic, then FF83 ARM."""
@@ -256,16 +282,47 @@ class HunterTransactionEngine:
     async def _retry(
         self,
         func: Callable[[], Awaitable[None]],
+        *,
+        uuid: str | None = None,
+        handle: int | None = None,
+        response: bool | None = None,
+        payload_length: int | None = None,
     ) -> None:
         last_error: Exception | None = None
+        mode = (
+            "with-response" if response is True
+            else "without-response" if response is False
+            else "auto"
+        )
         for attempt in range(MAX_RETRIES + 1):
             try:
                 await func()
                 return
             except BleakError as err:
                 last_error = err
+                if _is_att_write_not_permitted(err):
+                    _LOGGER.error(
+                        "Hunter BLE write rejected by controller: "
+                        "uuid=%s handle=%s mode=%s payload_len=%s "
+                        "ATT error=0x03 (Write Not Permitted); not retrying: %s",
+                        uuid,
+                        handle,
+                        mode,
+                        payload_length,
+                        err,
+                    )
+                    raise TransactionError(
+                        f"Controller rejected write to {uuid} "
+                        "(ATT 0x03 Write Not Permitted); retry suppressed."
+                    ) from err
+
                 _LOGGER.warning(
-                    "BLE transaction failed (%s/%s): %s",
+                    "BLE transaction failed uuid=%s handle=%s mode=%s "
+                    "payload_len=%s attempt=%s/%s: %s",
+                    uuid,
+                    handle,
+                    mode,
+                    payload_length,
                     attempt + 1,
                     MAX_RETRIES + 1,
                     err,
