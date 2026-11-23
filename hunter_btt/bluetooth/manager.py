@@ -158,6 +158,9 @@ class HunterBLEManager:
         if self.connected and self.connection.connected:
             return
 
+        self.protocol_initialized = False
+        self.state["protocol_initialized"] = False
+
         try:
             await self.connection.connect()
 
