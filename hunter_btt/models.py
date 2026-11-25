@@ -14,6 +14,9 @@ class HunterState(dict[str, Any]):
             running=False,
             active_zone=0,
             remaining_seconds=0,
+            protocol_initialized=False,
+            ff82_status=None,
+            ff83_config=None,
             zones={1: {"runtime": 600}, 2: {"runtime": 600}},
         )
         if initial:

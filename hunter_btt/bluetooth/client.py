@@ -225,7 +225,19 @@ class HunterBLEClient:
                     f"properties={sorted(properties)}"
                 )
 
-            if target == COMMAND_UUID:
+            if target == COMMAND_UUID and response is not None:
+                if response and "write" not in properties:
+                    raise BleakError(
+                        f"FF83 does not support write-with-response; "
+                        f"properties={sorted(properties)}"
+                    )
+                if not response and "write-without-response" not in properties:
+                    raise BleakError(
+                        f"FF83 does not support write-without-response; "
+                        f"properties={sorted(properties)}"
+                    )
+                selected_response = response
+            elif target == COMMAND_UUID:
                 if "write-without-response" in properties:
                     selected_response = False
                 elif "write" in properties:

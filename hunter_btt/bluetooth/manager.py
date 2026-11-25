@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import inspect
 import logging
+from dataclasses import asdict
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from ..models import HunterState
-from ..protocol.uuids import BATTERY_LEVEL_UUID, COMMAND_UUID
+from ..protocol.second_generation import (
+    build_ff83,
+    build_ff84,
+    merge_android_ff83,
+    parse_ff82,
+    parse_ff83,
+    parse_ff84,
+)
+from ..protocol.uuids import BATTERY_LEVEL_UUID, COMMAND_UUID, NOTIFY_UUID, TIME_UUID
 from ..protocol.generation import (
     FCC0_SERVICE_UUID,
     SECOND_SERVICE_UUID,
@@ -38,11 +49,15 @@ class HunterBLEManager:
         hass: HomeAssistant,
         address: str,
         passcode: str = "0000",
+        zone1_enabled: int = 1,
+        zone2_enabled: int = 1,
     ) -> None:
         self._hass = hass
         self.address = address
         self.name = "Hunter BTT"
         self.passcode = passcode
+        self._zone_enabled = {1: zone1_enabled, 2: zone2_enabled}
+        self.protocol_initialized = False
         self.client = HunterBLEClient(hass, address)
         self.connection = HunterConnection(hass, self.client)
         self.transaction = HunterTransactionEngine(self.connection)
@@ -89,7 +104,8 @@ class HunterBLEManager:
     def control_ready(self) -> bool:
         return (
             self._generation is HunterGeneration.SECOND
-            and bool({"write", "write-without-response"} & self.command_properties)
+            and self.protocol_initialized
+            and "write" in self.command_properties
         )
 
     def command_readiness_issue(self) -> str | None:
@@ -106,8 +122,13 @@ class HunterBLEManager:
                 "No alternate writable characteristic will be assumed. "
                 f"Writable characteristics discovered: {writable or 'none'}."
             )
-        if not ({"write", "write-without-response"} & properties):
-            return f"FF83 is present but not writable; properties={sorted(properties)}."
+        if "write" not in properties:
+            return (
+                "FF83 does not advertise write-with-response, which is required "
+                f"for the captured Android command path; properties={sorted(properties)}."
+            )
+        if not self.protocol_initialized:
+            return "Second-generation controller initialization has not completed successfully."
         return None
 
     def add_listener(self, callback):
@@ -139,6 +160,9 @@ class HunterBLEManager:
         """Connect, enumerate GATT, then identify protocol and zones."""
         if self.connected and self.connection.connected:
             return
+
+        self.protocol_initialized = False
+        self.state["protocol_initialized"] = False
 
         try:
             await self.connection.connect()
@@ -202,10 +226,6 @@ class HunterBLEManager:
                     item["properties"],
                 )
 
-            readiness_issue = self.command_readiness_issue()
-            if readiness_issue:
-                _LOGGER.warning("Hunter valve control is not ready: %s", readiness_issue)
-
             # Do not infer that FFA0/FFA1 are aliases for FF83. Keep the
             # native command UUID authoritative until packet-level evidence
             # establishes any transport-specific mapping.
@@ -217,7 +237,17 @@ class HunterBLEManager:
                 notification_status,
             )
 
+            if self._generation is HunterGeneration.SECOND:
+                await self._initialize_second_generation()
+            else:
+                self.protocol_initialized = True
+
+            readiness_issue = self.command_readiness_issue()
+            if readiness_issue:
+                _LOGGER.warning("Hunter valve control is not ready: %s", readiness_issue)
+
             self.connected = True
+            self.state["protocol_initialized"] = self.protocol_initialized
             await self._notify_state_changed()
 
             _LOGGER.info(
@@ -232,6 +262,7 @@ class HunterBLEManager:
 
         except HunterManagerError:
             self.connected = False
+            self.protocol_initialized = False
             try:
                 await self.connection.disconnect()
             except Exception:
@@ -239,6 +270,7 @@ class HunterBLEManager:
             raise
         except Exception as err:
             self.connected = False
+            self.protocol_initialized = False
             try:
                 await self.connection.disconnect()
             except Exception:
@@ -247,6 +279,46 @@ class HunterBLEManager:
                 f"Unable to connect to Hunter controller: {err}"
             ) from err
 
+    async def _initialize_second_generation(self) -> None:
+        """Reproduce Android connectTwoInit before enabling manual controls."""
+        self.protocol_initialized = False
+        self.state["protocol_initialized"] = False
+
+        async with self.transaction.transaction():
+            # Android reads FF84 before setting it to phone-local time + 1s.
+            clock_payload = await self.transaction.read(TIME_UUID)
+            parse_ff84(clock_payload)
+            await self.transaction.write(
+                TIME_UUID,
+                build_ff84(dt_util.now() + timedelta(seconds=1)),
+                response=True,
+            )
+
+            status = parse_ff82(await self.transaction.read(NOTIFY_UUID))
+            current_config = parse_ff83(
+                await self.transaction.read(COMMAND_UUID)
+            )
+            merged_config = merge_android_ff83(
+                current_config,
+                status,
+                zone1_enabled=self._zone_enabled[1],
+                zone2_enabled=self._zone_enabled[2],
+            )
+            await self.transaction.write(
+                COMMAND_UUID,
+                build_ff83(merged_config),
+                response=True,
+            )
+
+        self.state["ff82_status"] = asdict(status)
+        self.state["ff83_config"] = asdict(merged_config)
+        self.protocol_initialized = True
+        self.state["protocol_initialized"] = True
+        _LOGGER.info(
+            "Hunter second-generation initialization completed: "
+            "FF84 synchronized, FF82/FF83 read, FF83 state synchronized"
+        )
+
     async def disconnect(self) -> None:
         try:
             await self.client.unsubscribe()
@@ -254,6 +326,8 @@ class HunterBLEManager:
             pass
         await self.connection.disconnect()
         self.connected = False
+        self.protocol_initialized = False
+        self.state["protocol_initialized"] = False
         self.transaction.set_generation(HunterGeneration.UNKNOWN)
         await self._notify_state_changed()
 
