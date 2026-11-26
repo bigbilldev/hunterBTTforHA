@@ -129,6 +129,8 @@ class HunterTransactionEngine:
         self._lock = asyncio.Lock()
         self._ack_event = asyncio.Event()
         self._last_ack: bytes | None = None
+        self._notifications: dict[str, bytes] = {}
+        self._notification_events: dict[str, asyncio.Event] = {}
         self._generation = HunterGeneration.UNKNOWN
 
     @property
@@ -149,8 +151,50 @@ class HunterTransactionEngine:
         )
 
     async def notification(self, uuid: str, payload: bytes) -> None:
-        self._last_ack = bytes(payload)
+        """Cache a characteristic notification and wake its waiter."""
+        key = str(uuid).strip().lower()
+        value = bytes(payload)
+        self._notifications[key] = value
+        self._last_ack = value
         self._ack_event.set()
+        event = self._notification_events.get(key)
+        if event is not None:
+            event.set()
+
+    def clear_notification(self, uuid: str) -> None:
+        """Discard a cached value before starting a new BLE subscription."""
+        key = str(uuid).strip().lower()
+        self._notifications.pop(key, None)
+        event = self._notification_events.get(key)
+        if event is not None:
+            event.clear()
+
+    async def wait_for_notification(
+        self,
+        uuid: str,
+        *,
+        timeout: float = 8.0,
+    ) -> bytes:
+        """Wait for the next cached notification value for a characteristic."""
+        key = str(uuid).strip().lower()
+        cached = self._notifications.get(key)
+        if cached is not None:
+            return cached
+
+        event = self._notification_events.setdefault(key, asyncio.Event())
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+        except TimeoutError as err:
+            raise TransactionTimeout(
+                f"Timed out waiting for notification from {uuid}."
+            ) from err
+
+        payload = self._notifications.get(key)
+        if payload is None:
+            raise TransactionError(
+                f"Notification event for {uuid} completed without a payload."
+            )
+        return payload
 
     @asynccontextmanager
     async def transaction(self):
