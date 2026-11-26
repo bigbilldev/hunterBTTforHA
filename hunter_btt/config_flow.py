@@ -27,11 +27,6 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 ACTIVE_SCAN_SECONDS = 8
-ADDRESS_SCHEMA = vol.Schema(
-    {vol.Required(CONF_ADDRESS): str}
-)
-
-
 class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a Hunter BTT config flow."""
 
@@ -195,50 +190,6 @@ class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_NAME,
                         default=entry.data.get(CONF_NAME, "Hunter BTT"),
                     ): str,
-                }
-            ),
-        )
-
-    @staticmethod
-    def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
-    ) -> "HunterOptionsFlow":
-        return HunterOptionsFlow(config_entry)
-
-
-class HunterOptionsFlow(config_entries.OptionsFlow):
-    """Hunter options flow."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self._entry = config_entry
-
-    async def async_step_init(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> FlowResult:
-        if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
-
-        return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        "poll_interval",
-                        default=self._entry.options.get("poll_interval", 60),
-                    ): vol.All(int, vol.Range(min=15, max=600)),
-                    vol.Optional(
-                        "automatic_refresh",
-                        default=self._entry.options.get(
-                            "automatic_refresh", True
-                        ),
-                    ): bool,
-                    vol.Optional(
-                        "debug_logging",
-                        default=self._entry.options.get(
-                            "debug_logging", False
-                        ),
-                    ): bool,
                 }
             ),
         )
