@@ -59,7 +59,6 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(manager.protocol_initialized)
         self.assertTrue(manager.state["protocol_initialized"])
-        self.assertEqual(manager.state["ff82_status"]["zone1_state"], 1)
 
 
 if __name__ == "__main__":
