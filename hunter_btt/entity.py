@@ -72,29 +72,6 @@ class HunterEntity(CoordinatorEntity):
         self._attr_has_entity_name = True
 
     #
-    # Convenience
-    #
-
-    @property
-    def manager(self):
-        return self.coordinator.manager
-
-    @property
-    def state(self):
-        return self.coordinator.data
-
-    @property
-    def zone(self):
-        return self._zone
-
-    @property
-    def available(self) -> bool:
-        return (
-            self.coordinator.last_update_success
-            and self.manager.connected
-        )
-
-    #
     # Device
     #
 
@@ -264,19 +241,3 @@ class HunterEntity(CoordinatorEntity):
             self.zone,
             days,
         )
-
-    #
-    # Debug
-    #
-
-    @property
-    def extra_state_attributes(self):
-        attrs = {}
-
-        if self._zone is not None:
-            attrs["zone"] = self._zone
-
-        attrs["connected"] = self.manager.connected
-        attrs["address"] = self.coordinator.address
-
-        return attrs
