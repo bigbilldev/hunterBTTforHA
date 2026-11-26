@@ -14,6 +14,13 @@ from homeassistant.const import PERCENTAGE
 from .entity import HunterEntity
 
 
+def validated_battery_level(value: object) -> int | None:
+    """Return a valid BLE battery percentage, or None for invalid data."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= 100 else None
+
+
 @dataclass(frozen=True, kw_only=True)
 class HunterSensorDescription(SensorEntityDescription):
     """Description of a Hunter BTT sensor."""
@@ -76,7 +83,5 @@ class HunterSensor(HunterEntity, SensorEntity):
         value = self.coordinator.data.get(description.value_key)
         if description.value_key == "battery":
             # BLE Battery Level is a percentage; reject malformed values.
-            if isinstance(value, bool) or not isinstance(value, int):
-                return None
-            return value if 0 <= value <= 100 else None
+            return validated_battery_level(value)
         return value
