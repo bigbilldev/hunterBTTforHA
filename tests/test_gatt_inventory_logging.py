@@ -1,6 +1,4 @@
 """Regression tests for discovered GATT inventory logging."""
-
-import logging
 import unittest
 
 from hunter_btt.bluetooth.client import HunterBLEClient
@@ -52,7 +50,9 @@ class GattInventoryLoggingTests(unittest.TestCase):
         client = HunterBLEClient(None, "AA:BB:CC:DD:EE:FF")
         client._client = FakeBleakClient([service])
 
-        with self.assertLogs("hunter_btt.bluetooth.client", level=logging.DEBUG) as logs:
+        with self.assertLogs(
+            "hunter_btt.bluetooth.client", level=logging.DEBUG
+        ) as logs:
             client._log_gatt_inventory()
 
         output = "\n".join(logs.output)
@@ -82,7 +82,9 @@ class GattInventoryLoggingTests(unittest.TestCase):
         client = HunterBLEClient(None, "AA:BB:CC:DD:EE:FF")
         client._client = FakeBleakClient([service])
 
-        with self.assertLogs("hunter_btt.bluetooth.client", level=logging.INFO) as logs:
+        with self.assertLogs(
+            "hunter_btt.bluetooth.client", level=logging.INFO
+        ) as logs:
             client._log_gatt_inventory()
 
         output = "\n".join(logs.output)
