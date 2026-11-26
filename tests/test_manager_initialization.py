@@ -57,17 +57,14 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
         manager._zone_enabled = {1: 1, 2: 1}
         manager.protocol_initialized = False
 
-        manager.transaction.read = invalid_clock_read
-        async def run_initialization():
-            await manager._initialize_second_generation()
-
         async def invalid_clock_read(uuid):
             if uuid == TIME_UUID:
                 return b"invalid"
             raise AssertionError(f"Unexpected GATT read: {uuid}")
 
+        manager.transaction.read = invalid_clock_read
         with self.assertRaisesRegex(ValueError, "FF84 payload must be 8 bytes"):
-            await run_initialization()
+            await manager._initialize_second_generation()
 
         self.assertEqual(manager.transaction.writes, [])
 
