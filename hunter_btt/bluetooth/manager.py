@@ -304,8 +304,41 @@ class HunterBLEManager:
 
         async with self.transaction.transaction():
             # Validate the controller's clock record before applying Android's
-            # local-time synchronization step.
-            parse_ff84(await self.transaction.read(TIME_UUID))
+            # local-time synchronization step. Keep diagnostics separate from
+            # protocol behavior: do not change the FF84 payload or sequence here.
+            clock_record: bytes | None = None
+            try:
+                clock_record = await self.transaction.read(TIME_UUID)
+                parse_ff84(clock_record)
+            except Exception as err:
+                # Diagnostics must not mask the original FF84 failure.
+                # Some isolated/unit-test managers do not have a connection
+                # object, and inventory entries may not all be mappings.
+                connection = getattr(self, "connection", None)
+                inventory = getattr(connection, "gatt_inventory", []) or []
+                characteristic = next(
+                    (
+                        item
+                        for item in inventory
+                        if isinstance(item, dict)
+                        and str(item.get("uuid", "")).strip().lower() == TIME_UUID
+                    ),
+                    {},
+                )
+                _LOGGER.warning(
+                    "Hunter FF84 read/validation failed before initialization: "
+                    "uuid=%s handle=%s properties=%s response_len=%s "
+                    "error_type=%s error=%s",
+                    TIME_UUID,
+                    characteristic.get("handle"),
+                    characteristic.get("properties", []),
+                    len(clock_record) if isinstance(clock_record, bytes) else None,
+                    type(err).__name__,
+                    err,
+                    exc_info=True,
+                )
+                raise
+
             clock_payload = build_ff84(dt_util.now() + timedelta(seconds=1))
             await self.transaction.write(
                 TIME_UUID,
@@ -402,7 +435,19 @@ class HunterBLEManager:
             value = await self.connection.read(BATTERY_LEVEL_UUID)
             battery = int(value[0]) if value else None
         except Exception as err:
-            raise HunterManagerError(f"Unable to read battery level: {err}") from err
+            # Battery level is optional telemetry. A transient GATT/proxy read
+            # failure must not make the coordinator unavailable or discard the
+            # last successfully reported value.
+            previous_battery = self.state.get("battery")
+            _LOGGER.warning(
+                "Optional Hunter battery telemetry read failed: uuid=%s "
+                "error_type=%s error=%s; retaining previous value=%s",
+                BATTERY_LEVEL_UUID,
+                type(err).__name__,
+                err,
+                previous_battery,
+            )
+            return previous_battery
         self.state["battery"] = battery
         await self._notify_state_changed()
         return battery

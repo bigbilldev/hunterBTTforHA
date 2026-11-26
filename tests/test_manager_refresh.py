@@ -30,6 +30,22 @@ class ManagerRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.state.battery, 76)
         self.assertEqual(manager.ensure_connected.await_count, 1)
 
+    async def test_battery_read_failure_is_non_fatal_and_retains_last_value(self):
+        manager = HunterBLEManager.__new__(HunterBLEManager)
+        manager.connection = FakeBatteryConnection()
+        manager.connection.read = AsyncMock(side_effect=RuntimeError("GATT Error 133"))
+        manager.state = HunterState({"battery": 64})
+        manager._listeners = set()
+        manager._state_callback = None
+        manager.ensure_connected = AsyncMock()
+
+        with self.assertLogs("hunter_btt.bluetooth.manager", level="WARNING"):
+            battery = await manager.refresh_battery()
+
+        self.assertEqual(battery, 64)
+        self.assertEqual(manager.state.battery, 64)
+        self.assertEqual(manager.ensure_connected.await_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
