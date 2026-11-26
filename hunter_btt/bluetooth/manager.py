@@ -7,9 +7,8 @@ import logging
 from datetime import timedelta
 from typing import Any
 
-from homeassistant.util import dt as dt_util
-
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from ..models import HunterState
 from ..protocol.second_generation import (
@@ -23,7 +22,9 @@ from ..protocol.second_generation import (
 from ..protocol.uuids import (
     BATTERY_LEVEL_UUID,
     COMMAND_UUID,
+    COUNTDOWN_UUID,
     NOTIFY_UUID,
+    STATUS_NOTIFY_UUID,
     TIME_UUID,
 )
 from ..protocol.generation import (
@@ -216,14 +217,8 @@ class HunterBLEManager:
             _LOGGER.info(
                 "Hunter notification subscription results: FF82=%s FF8A=%s FF8F=%s",
                 subscription_status.get(NOTIFY_UUID, "not reported"),
-                subscription_status.get(
-                    "0000ff8a-0000-1000-8000-00805f9b34fb",
-                    "not reported",
-                ),
-                subscription_status.get(
-                    "0000ff8f-0000-1000-8000-00805f9b34fb",
-                    "not reported",
-                ),
+                subscription_status.get(COUNTDOWN_UUID, "not reported"),
+                subscription_status.get(STATUS_NOTIFY_UUID, "not reported"),
             )
 
             if self._generation is HunterGeneration.SECOND:
