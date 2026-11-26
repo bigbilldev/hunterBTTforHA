@@ -312,9 +312,16 @@ class HunterBLEClient:
             raise BleakError("No Hunter notification callback registered.")
 
         def _callback(characteristic, data) -> None:
+            payload = bytes(data)
+            _LOGGER.debug(
+                "Hunter BLE notification received uuid=%s handle=%s payload_len=%d",
+                str(characteristic.uuid).strip().lower(),
+                getattr(characteristic, "handle", None),
+                len(payload),
+            )
             result = self._notification_callback(
                 str(characteristic.uuid),
-                bytes(data),
+                payload,
             )
             if inspect.isawaitable(result):
                 asyncio.create_task(result)
@@ -348,15 +355,31 @@ class HunterBLEClient:
                     f"unsupported properties={','.join(sorted(properties))}"
                 )
                 continue
+            handle = self.characteristic_handle(uuid)
             try:
                 await self.start_notify(uuid)
                 self._notification_status[uuid] = "subscribed"
+                _LOGGER.info(
+                    "Hunter notification subscription successful uuid=%s handle=%s properties=%s",
+                    uuid,
+                    handle,
+                    sorted(properties),
+                )
             except Exception as err:
                 self._notification_status[uuid] = f"failed: {err}"
                 _LOGGER.warning(
-                    "Hunter notification subscription failed uuid=%s: %s",
+                    "Hunter notification subscription failed uuid=%s handle=%s properties=%s: %s",
                     uuid,
+                    handle,
+                    sorted(properties),
                     err,
+                )
+        for uuid, status in self._notification_status.items():
+            if status != "subscribed" and not status.startswith("failed:"):
+                _LOGGER.info(
+                    "Hunter notification subscription unavailable uuid=%s status=%s",
+                    uuid,
+                    status,
                 )
         return self.notification_status
 
