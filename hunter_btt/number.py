@@ -15,6 +15,11 @@ RUNTIME_DESCRIPTION = NumberEntityDescription(
 )
 
 
+def minutes_to_seconds(value: int | float) -> int:
+    """Convert the Home Assistant number input from minutes to seconds."""
+    return int(value) * 60
+
+
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up Hunter BTT number entities."""
 
@@ -28,9 +33,9 @@ class HunterRuntimeNumber(HunterEntity, NumberEntity):
 
     _attr_name = "Manual Runtime"
     _attr_native_min_value = 1
-    _attr_native_max_value = 3600
+    _attr_native_max_value = 60
     _attr_native_step = 1
-    _attr_native_unit_of_measurement = "s"
+    _attr_native_unit_of_measurement = "min"
 
     def __init__(self, coordinator):
         self.entity_description = RUNTIME_DESCRIPTION
@@ -43,11 +48,11 @@ class HunterRuntimeNumber(HunterEntity, NumberEntity):
     @property
     def native_value(self):
         """Return the configured Zone 1 runtime."""
-        return self.coordinator.zone_runtime(1)
+        return self.coordinator.zone_runtime(1) / 60
 
     async def async_set_native_value(self, value):
         """Set the configured Zone 1 runtime."""
         await self.coordinator.async_set_manual_runtime(
             1,
-            int(value),
+            int(value) * 60,
         )
