@@ -3,7 +3,12 @@
 import unittest
 
 from hunter_btt.bluetooth.client import HunterBLEClient
-from hunter_btt.protocol.uuids import COUNTDOWN_UUID, NOTIFY_UUID, STATUS_NOTIFY_UUID
+from hunter_btt.protocol.uuids import (
+    BATTERY_LEVEL_UUID,
+    COUNTDOWN_UUID,
+    NOTIFY_UUID,
+    STATUS_NOTIFY_UUID,
+)
 
 
 class FakeCharacteristic:
@@ -35,6 +40,7 @@ class NotificationDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             FakeCharacteristic(NOTIFY_UUID, 22, ["notify"]),
             FakeCharacteristic(COUNTDOWN_UUID, 39, ["indicate"]),
             FakeCharacteristic(STATUS_NOTIFY_UUID, 50, ["read"]),
+            FakeCharacteristic(BATTERY_LEVEL_UUID, 104, ["notify", "read"]),
         ]
         fake_client = FakeBleakClient(characteristics)
         client = HunterBLEClient(None, "AA:BB:CC:DD:EE:FF")
@@ -50,17 +56,30 @@ class NotificationDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
                 characteristics[0],
                 bytes.fromhex("01 02 03"),
             )
+            fake_client.callbacks[BATTERY_LEVEL_UUID](
+                characteristics[3],
+                bytes((82,)),
+            )
 
         self.assertEqual(status[NOTIFY_UUID], "subscribed")
         self.assertEqual(status[COUNTDOWN_UUID], "subscribed")
         self.assertEqual(status[STATUS_NOTIFY_UUID], "unsupported properties=read")
-        self.assertEqual(received, [(NOTIFY_UUID, bytes.fromhex("01 02 03"))])
+        self.assertEqual(status[BATTERY_LEVEL_UUID], "subscribed")
+        self.assertEqual(
+            received,
+            [
+                (NOTIFY_UUID, bytes.fromhex("01 02 03")),
+                (BATTERY_LEVEL_UUID, bytes((82,))),
+            ],
+        )
 
         output = "\n".join(logs.output)
         self.assertIn("notification subscription successful uuid=" + NOTIFY_UUID, output)
         self.assertIn("notification subscription successful uuid=" + COUNTDOWN_UUID, output)
         self.assertIn("notification subscription unavailable uuid=" + STATUS_NOTIFY_UUID, output)
+        self.assertIn("notification subscription successful uuid=" + BATTERY_LEVEL_UUID, output)
         self.assertIn("notification received uuid=" + NOTIFY_UUID, output)
+        self.assertIn("notification received uuid=" + BATTERY_LEVEL_UUID, output)
         self.assertIn("payload_len=3", output)
 
 

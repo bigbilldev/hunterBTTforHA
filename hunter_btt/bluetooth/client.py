@@ -17,6 +17,7 @@ from homeassistant.components import bluetooth
 from homeassistant.core import HomeAssistant
 
 from ..protocol.uuids import (
+    BATTERY_LEVEL_UUID,
     COUNTDOWN_UUID,
     NOTIFY_UUID,
     PASSCODE_UUID,
@@ -345,7 +346,12 @@ class HunterBLEClient:
             await self.connect()
 
         self._notification_status = {}
-        for uuid in (NOTIFY_UUID, COUNTDOWN_UUID, STATUS_NOTIFY_UUID):
+        for uuid in (
+            NOTIFY_UUID,
+            COUNTDOWN_UUID,
+            STATUS_NOTIFY_UUID,
+            BATTERY_LEVEL_UUID,
+        ):
             properties = self.characteristic_properties(uuid)
             if not properties:
                 self._notification_status[uuid] = "missing"
