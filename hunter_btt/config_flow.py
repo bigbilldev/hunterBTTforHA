@@ -21,17 +21,12 @@ from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
 from homeassistant.data_entry_flow import FlowResult
 
-from .bluetooth.discovery import describe_discovery, is_hunter_btt
+from .bluetooth.discovery import is_hunter_btt
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
 ACTIVE_SCAN_SECONDS = 8
-ADDRESS_SCHEMA = vol.Schema(
-    {vol.Required(CONF_ADDRESS): str}
-)
-
-
 class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a Hunter BTT config flow."""
 
@@ -57,17 +52,9 @@ class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         devices: dict[str, BluetoothServiceInfoBleak] = {}
         for info in infos:
-            details = describe_discovery(info)
-            _LOGGER.warning("Hunter advertisement seen: %s", details)
-
             if is_hunter_btt(info):
                 devices[info.address] = info
 
-        _LOGGER.warning(
-            "Hunter discovery result: %d candidate(s): %s",
-            len(devices),
-            sorted(devices),
-        )
         return devices
 
     async def async_step_user(
@@ -118,11 +105,6 @@ class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
         if not self._devices:
-            _LOGGER.warning(
-                "No Hunter advertisements were found. "
-                "The Bluetooth proxy may not be forwarding the device. "
-                "Manual address entry remains available."
-            )
             return self.async_show_form(
                 step_id="user",
                 data_schema=schema,
@@ -154,11 +136,6 @@ class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         discovery_info: BluetoothServiceInfoBleak,
     ) -> FlowResult:
         """Handle manifest-based Bluetooth discovery."""
-        _LOGGER.warning(
-            "Hunter Bluetooth config-flow discovery: %s",
-            describe_discovery(discovery_info),
-        )
-
         if not is_hunter_btt(discovery_info):
             return self.async_abort(reason="not_supported")
 
@@ -213,50 +190,6 @@ class HunterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_NAME,
                         default=entry.data.get(CONF_NAME, "Hunter BTT"),
                     ): str,
-                }
-            ),
-        )
-
-    @staticmethod
-    def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
-    ) -> "HunterOptionsFlow":
-        return HunterOptionsFlow(config_entry)
-
-
-class HunterOptionsFlow(config_entries.OptionsFlow):
-    """Hunter options flow."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self._entry = config_entry
-
-    async def async_step_init(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> FlowResult:
-        if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
-
-        return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        "poll_interval",
-                        default=self._entry.options.get("poll_interval", 60),
-                    ): vol.All(int, vol.Range(min=15, max=600)),
-                    vol.Optional(
-                        "automatic_refresh",
-                        default=self._entry.options.get(
-                            "automatic_refresh", True
-                        ),
-                    ): bool,
-                    vol.Optional(
-                        "debug_logging",
-                        default=self._entry.options.get(
-                            "debug_logging", False
-                        ),
-                    ): bool,
                 }
             ),
         )

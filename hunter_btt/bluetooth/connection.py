@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 
 from homeassistant.core import HomeAssistant
 
 from .client import HunterBLEClient
-
-_LOGGER = logging.getLogger(__name__)
 
 
 class HunterConnectionError(Exception):
@@ -40,16 +37,8 @@ class HunterConnection:
         return self.client.characteristic_uuids
 
     @property
-    def gatt_inventory(self) -> list[dict[str, object]]:
-        return self.client.gatt_inventory
-
-    @property
     def writable_characteristics(self) -> list[dict[str, object]]:
         return self.client.writable_characteristics
-
-    @property
-    def notification_status(self) -> dict[str, str]:
-        return self.client.notification_status
 
     def characteristic_properties(self, uuid: str) -> set[str]:
         return self.client.characteristic_properties(uuid)
@@ -67,7 +56,6 @@ class HunterConnection:
         await self.client.disconnect()
 
     async def reconnect(self) -> None:
-        _LOGGER.debug("Reconnecting Hunter controller")
         await self.client.reconnect()
 
     async def ensure_connection(self) -> None:
@@ -112,11 +100,7 @@ class HunterConnection:
         try:
             await self.client.stop_notify(uuid)
         except Exception:
-            _LOGGER.debug(
-                "Unable to unsubscribe %s",
-                uuid,
-                exc_info=True,
-            )
+            pass
 
     async def read_rssi(self) -> int | None:
         return await self.client.read_rssi()
