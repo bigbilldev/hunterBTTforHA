@@ -2,8 +2,8 @@
 
 import unittest
 
-from hunter_btt.number import minutes_to_seconds
-from hunter_btt.sensor import seconds_to_minutes
+from hunter_btt.number import HunterRuntimeNumber, minutes_to_seconds
+from hunter_btt.sensor import SENSORS, seconds_to_minutes
 
 
 class RuntimeUnitTests(unittest.TestCase):
@@ -24,6 +24,12 @@ class RuntimeUnitTests(unittest.TestCase):
         self.assertEqual(minutes_to_seconds(10), 600)
         self.assertEqual(minutes_to_seconds(1), 60)
         self.assertEqual(minutes_to_seconds(60), 3600)
+
+    def test_home_assistant_entities_advertise_minutes(self):
+        self.assertEqual(SENSORS[1].native_unit_of_measurement, "min")
+        self.assertEqual(SENSORS[2].native_unit_of_measurement, "min")
+        self.assertEqual(HunterRuntimeNumber._attr_native_unit_of_measurement, "min")
+        self.assertEqual(HunterRuntimeNumber._attr_native_max_value, 60)
 
 
 if __name__ == "__main__":
