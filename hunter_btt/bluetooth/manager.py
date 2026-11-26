@@ -157,13 +157,6 @@ class HunterBLEManager:
             services = set(self.connection.service_uuids)
             characteristics = set(self.connection.characteristic_uuids)
 
-            _LOGGER.debug(
-                "Hunter post-connect GATT inventory address=%s services=%s chars=%s",
-                self.address,
-                sorted(services),
-                sorted(characteristics),
-            )
-
             self._generation = detect_generation(
                 service_uuids=services,
                 device_name=self.name,
