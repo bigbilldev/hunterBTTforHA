@@ -1,4 +1,6 @@
 """Regression tests for discovered GATT inventory logging."""
+
+import logging
 import unittest
 
 from hunter_btt.bluetooth.client import HunterBLEClient
