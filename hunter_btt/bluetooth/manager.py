@@ -27,7 +27,7 @@ from ..protocol.generation import (
 )
 from .client import HunterBLEClient
 from .connection import HunterConnection
-from .transaction import HunterTransactionEngine
+from .transaction import HunterTransactionEngine, TransactionTimeout
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -199,7 +199,7 @@ class HunterBLEManager:
             await self.client.subscribe(self.transaction.notification)
 
             if self._generation is HunterGeneration.SECOND:
-                await self._initialize_second_generation()
+                await self._initialize_second_generation_if_supported()
             else:
                 self.protocol_initialized = True
 
@@ -239,6 +239,35 @@ class HunterBLEManager:
             raise HunterManagerError(
                 f"Unable to connect to Hunter controller: {err}"
             ) from err
+
+    async def _initialize_second_generation_if_supported(self) -> None:
+        """Initialize only when the connected GATT transport exposes FF83.
+
+        Some Bluetooth transports expose a different GATT table from the
+        native controller. Never guess that another writable UUID is an FF83
+        alias. Keep the BLE connection available for supported telemetry,
+        but leave valve control unavailable until the command characteristic
+        and its initialization notification are actually available.
+        """
+        self.protocol_initialized = False
+        self.state["protocol_initialized"] = False
+
+        if not self.command_properties:
+            _LOGGER.warning(
+                "Hunter second-generation valve control unavailable: FF83 "
+                "was not discovered. GATT inventory: %s",
+                self.connection.gatt_inventory,
+            )
+            return
+
+        try:
+            await self._initialize_second_generation()
+        except TransactionTimeout as err:
+            _LOGGER.warning(
+                "Hunter connected, but second-generation valve control "
+                "initialization is incomplete: %s. No FF83 state was written.",
+                err,
+            )
 
     async def _initialize_second_generation(self) -> None:
         """Initialize manual controls from FF82 notifications and FF83 state.
