@@ -28,7 +28,7 @@ class ManagerRefreshTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(state["battery"], 76)
         self.assertEqual(manager.state.battery, 76)
-        self.assertEqual(manager.ensure_connected.await_count, 2)
+        self.assertEqual(manager.ensure_connected.await_count, 1)
 
 
 if __name__ == "__main__":
