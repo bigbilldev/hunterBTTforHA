@@ -25,7 +25,7 @@ class HunterSensorDescription(SensorEntityDescription):
 SENSORS = (
     HunterSensorDescription(
         key="battery",
-        name="Battery",
+        name="Battery Level",
         value_key="battery",
         native_unit_of_measurement=PERCENTAGE,
         device_class=SensorDeviceClass.BATTERY,
@@ -73,6 +73,10 @@ class HunterSensor(HunterEntity, SensorEntity):
                 description.zone
             )
 
-        return self.coordinator.data.get(
-            description.value_key
-        )
+        value = self.coordinator.data.get(description.value_key)
+        if description.value_key == "battery":
+            # BLE Battery Level is a percentage; reject malformed values.
+            if isinstance(value, bool) or not isinstance(value, int):
+                return None
+            return value if 0 <= value <= 100 else None
+        return value
