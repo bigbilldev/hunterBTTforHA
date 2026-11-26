@@ -311,12 +311,17 @@ class HunterBLEManager:
                 clock_record = await self.transaction.read(TIME_UUID)
                 parse_ff84(clock_record)
             except Exception as err:
-                inventory = getattr(self.connection, "gatt_inventory", [])
+                # Diagnostics must not mask the original FF84 failure.
+                # Some isolated/unit-test managers do not have a connection
+                # object, and inventory entries may not all be mappings.
+                connection = getattr(self, "connection", None)
+                inventory = getattr(connection, "gatt_inventory", []) or []
                 characteristic = next(
                     (
                         item
                         for item in inventory
-                        if str(item.get("uuid", "")).strip().lower() == TIME_UUID
+                        if isinstance(item, dict)
+                        and str(item.get("uuid", "")).strip().lower() == TIME_UUID
                     ),
                     {},
                 )
