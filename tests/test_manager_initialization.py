@@ -50,6 +50,27 @@ class FakeInitializationTransaction:
 
 
 class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ff84_invalid_clock_aborts_before_ff83_write(self):
+        manager = HunterBLEManager.__new__(HunterBLEManager)
+        manager.state = HunterState()
+        manager.transaction = FakeInitializationTransaction()
+        manager._zone_enabled = {1: 1, 2: 1}
+        manager.protocol_initialized = False
+
+        manager.transaction.read = invalid_clock_read
+        async def run_initialization():
+            await manager._initialize_second_generation()
+
+        async def invalid_clock_read(uuid):
+            if uuid == TIME_UUID:
+                return b"invalid"
+            raise AssertionError(f"Unexpected GATT read: {uuid}")
+
+        with self.assertRaisesRegex(ValueError, "FF84 payload must be 8 bytes"):
+            await run_initialization()
+
+        self.assertEqual(manager.transaction.writes, [])
+
     async def test_startup_uses_ff82_notification_and_never_reads_ff82(self):
         manager = HunterBLEManager.__new__(HunterBLEManager)
         manager.state = HunterState()
