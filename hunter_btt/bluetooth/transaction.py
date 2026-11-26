@@ -265,15 +265,6 @@ class HunterTransactionEngine:
         arm_payload = build_start_arm_packet(zone, runtime_seconds)
         config_uuid = ZONE_CONFIG_UUID[zone]
 
-        _LOGGER.info(
-            "SECOND START: zone=%d duration_uuid=%s duration_write=%s "
-            "then FF83 arm_write=%s",
-            zone,
-            config_uuid,
-            duration_payload.hex(" "),
-            arm_payload.hex(" "),
-        )
-
         async with self.transaction():
             # A response write ensures the FF86/FF8B write has completed
             # before the ARM command is issued, matching the captured order.
@@ -288,8 +279,6 @@ class HunterTransactionEngine:
             )
 
         payload = build_stop_packet()
-        _LOGGER.info("SECOND STOP: FF83 write=%s", payload.hex(" "))
-
         async with self.transaction():
             await self.write(FF83_UUID, payload, response=True)
 
