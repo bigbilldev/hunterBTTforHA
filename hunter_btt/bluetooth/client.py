@@ -168,14 +168,6 @@ class HunterBLEClient:
                 self._client = None
                 raise
 
-            # Bleak's connected client exposes the GATT database only after
-            # service discovery. Log the exact inventory used for generation.
-            _LOGGER.debug(
-                "Hunter GATT discovered address=%s services=%s characteristics=%s",
-                self._address,
-                sorted(self.service_uuids),
-                sorted(self.characteristic_uuids),
-            )
 
     async def disconnect(self) -> None:
         async with self._lock:
@@ -261,13 +253,6 @@ class HunterBLEClient:
                     )
                 selected_response = response
 
-            _LOGGER.debug(
-                "Hunter BLE write uuid=%s response=%s properties=%s payload=%s",
-                uuid,
-                selected_response,
-                sorted(properties),
-                bytes(payload).hex(" "),
-            )
             try:
                 await self._client.write_gatt_char(
                     uuid,
