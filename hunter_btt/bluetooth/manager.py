@@ -225,6 +225,9 @@ class HunterBLEManager:
             # Do not infer that FFA0/FFA1 are aliases for FF83. Keep the
             # native command UUID authoritative until packet-level evidence
             # establishes any transport-specific mapping.
+            # FF82 is notification-driven on this controller. Discard any
+            # payload retained from a previous connection before subscribing.
+            self.transaction.clear_notification(NOTIFY_UUID)
             notification_status = await self.client.subscribe(
                 self.transaction.notification
             )
@@ -276,18 +279,23 @@ class HunterBLEManager:
             ) from err
 
     async def _initialize_second_generation(self) -> None:
-        """Initialize manual controls using readable FF82 and FF83 state.
+        """Initialize manual controls from FF82 notifications and FF83 state.
 
-        FF84 clock synchronization is deliberately non-blocking: some
-        controllers/proxies reject ATT reads on FF84 even when GATT metadata
-        advertises the read property. Clock synchronization is not required
-        to establish the FF83 manual-control path.
+        FF82 is notification-driven; the controller rejects ATT reads on that
+        characteristic even though its GATT metadata may advertise read.
+        FF84 clock synchronization is also intentionally skipped because it
+        is not required for the manual-control path.
         """
         self.protocol_initialized = False
         self.state["protocol_initialized"] = False
 
         async with self.transaction.transaction():
-            status = parse_ff82(await self.transaction.read(NOTIFY_UUID))
+            status = parse_ff82(
+                await self.transaction.wait_for_notification(
+                    NOTIFY_UUID,
+                    timeout=8.0,
+                )
+            )
             current_config = parse_ff83(
                 await self.transaction.read(COMMAND_UUID)
             )
