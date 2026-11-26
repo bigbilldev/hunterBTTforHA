@@ -21,6 +21,14 @@ def validated_battery_level(value: object) -> int | None:
     return value if 0 <= value <= 100 else None
 
 
+def seconds_to_minutes(value: object) -> int | float | None:
+    """Convert an internal seconds value to minutes for Home Assistant."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    minutes = value / 60
+    return int(minutes) if minutes.is_integer() else round(minutes, 2)
+
+
 @dataclass(frozen=True, kw_only=True)
 class HunterSensorDescription(SensorEntityDescription):
     """Description of a Hunter BTT sensor."""
@@ -41,13 +49,13 @@ SENSORS = (
         key="remaining_time",
         name="Remaining Time",
         value_key="remaining_seconds",
-        native_unit_of_measurement="s",
+        native_unit_of_measurement="min",
     ),
     HunterSensorDescription(
         key="runtime",
         name="Manual Runtime",
         value_key="runtime",
-        native_unit_of_measurement="s",
+        native_unit_of_measurement="min",
         zone=1,
     ),
 )
@@ -76,12 +84,14 @@ class HunterSensor(HunterEntity, SensorEntity):
         description = self.entity_description
 
         if description.zone is not None:
-            return self.coordinator.zone_runtime(
-                description.zone
+            return seconds_to_minutes(
+                self.coordinator.zone_runtime(description.zone)
             )
 
         value = self.coordinator.data.get(description.value_key)
         if description.value_key == "battery":
             # BLE Battery Level is a percentage; reject malformed values.
             return validated_battery_level(value)
+        if description.value_key == "remaining_seconds":
+            return seconds_to_minutes(value)
         return value
