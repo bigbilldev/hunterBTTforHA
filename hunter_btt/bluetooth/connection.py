@@ -37,16 +37,8 @@ class HunterConnection:
         return self.client.characteristic_uuids
 
     @property
-    def gatt_inventory(self) -> list[dict[str, object]]:
-        return self.client.gatt_inventory
-
-    @property
     def writable_characteristics(self) -> list[dict[str, object]]:
         return self.client.writable_characteristics
-
-    @property
-    def notification_status(self) -> dict[str, str]:
-        return self.client.notification_status
 
     def characteristic_properties(self, uuid: str) -> set[str]:
         return self.client.characteristic_properties(uuid)
