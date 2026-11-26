@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import inspect
 import logging
-from dataclasses import asdict
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -81,16 +80,8 @@ class HunterBLEManager:
         return self.connected
 
     @property
-    def gatt_inventory(self) -> list[dict[str, object]]:
-        return self.connection.gatt_inventory
-
-    @property
     def writable_characteristics(self) -> list[dict[str, object]]:
         return self.connection.writable_characteristics
-
-    @property
-    def notification_status(self) -> dict[str, str]:
-        return self.connection.notification_status
 
     @property
     def command_properties(self) -> set[str]:
@@ -206,35 +197,13 @@ class HunterBLEManager:
 
             self.transaction.set_generation(self._generation)
 
-            inventory = self.gatt_inventory
-            _LOGGER.info(
-                "Hunter GATT inventory address=%s service_count=%d characteristic_count=%d",
-                self.address,
-                len(services),
-                len(inventory),
-            )
-            for item in inventory:
-                _LOGGER.debug(
-                    "Hunter GATT characteristic service=%s uuid=%s handle=%s properties=%s",
-                    item["service_uuid"],
-                    item["uuid"],
-                    item["handle"],
-                    item["properties"],
-                )
-
             # Do not infer that FFA0/FFA1 are aliases for FF83. Keep the
             # native command UUID authoritative until packet-level evidence
             # establishes any transport-specific mapping.
             # FF82 is notification-driven on this controller. Discard any
             # payload retained from a previous connection before subscribing.
             self.transaction.clear_notification(NOTIFY_UUID)
-            notification_status = await self.client.subscribe(
-                self.transaction.notification
-            )
-            _LOGGER.info(
-                "Hunter notification subscription results: %s",
-                notification_status,
-            )
+            await self.client.subscribe(self.transaction.notification)
 
             if self._generation is HunterGeneration.SECOND:
                 await self._initialize_second_generation()
@@ -311,8 +280,6 @@ class HunterBLEManager:
                 response=True,
             )
 
-        self.state["ff82_status"] = asdict(status)
-        self.state["ff83_config"] = asdict(merged_config)
         self.protocol_initialized = True
         self.state["protocol_initialized"] = True
         _LOGGER.info(
@@ -368,7 +335,9 @@ class HunterBLEManager:
         await self._notify_state_changed()
 
     async def refresh(self) -> HunterState:
+        """Refresh the live values exposed to Home Assistant."""
         await self.ensure_connected()
+        await self.refresh_battery()
         return self.state
 
     async def refresh_battery(self) -> int | None:
