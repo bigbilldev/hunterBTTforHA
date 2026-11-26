@@ -158,6 +158,40 @@ class HunterBLEManager:
             except Exception:
                 _LOGGER.exception("Hunter state listener failed")
 
+    @staticmethod
+    def _parse_battery_payload(payload: bytes) -> int:
+        """Decode the standard 2A19 uint8 battery percentage."""
+        if len(payload) != 1:
+            raise ValueError(
+                f"Battery Level 2A19 must be exactly one byte; received {len(payload)}."
+            )
+        level = payload[0]
+        if level > 100:
+            raise ValueError(
+                f"Battery Level 2A19 must be 0..100 percent; received {level}."
+            )
+        return level
+
+    async def _handle_notification(self, uuid: str, payload: bytes) -> None:
+        """Cache protocol notifications and update battery telemetry."""
+        key = str(uuid).strip().lower()
+        value = bytes(payload)
+        await self.transaction.notification(key, value)
+
+        if key != BATTERY_LEVEL_UUID:
+            return
+
+        try:
+            battery = self._parse_battery_payload(value)
+        except ValueError as err:
+            _LOGGER.warning("Ignoring invalid Hunter battery notification: %s", err)
+            return
+
+        if self.state.get("battery") != battery:
+            self.state["battery"] = battery
+            _LOGGER.debug("Hunter battery level notification: %d%%", battery)
+            await self._notify_state_changed()
+
     async def connect(self) -> None:
         """Connect, enumerate GATT, then identify protocol and zones."""
         if self.connected and self.connection.connected:
@@ -211,14 +245,17 @@ class HunterBLEManager:
             # FF82 is notification-driven on this controller. Discard any
             # payload retained from a previous connection before subscribing.
             self.transaction.clear_notification(NOTIFY_UUID)
+            self.transaction.clear_notification(BATTERY_LEVEL_UUID)
             subscription_status = await self.client.subscribe(
-                self.transaction.notification
+                self._handle_notification
             )
             _LOGGER.info(
-                "Hunter notification subscription results: FF82=%s FF8A=%s FF8F=%s",
+                "Hunter notification subscription results: FF82=%s FF8A=%s "
+                "FF8F=%s battery_2A19=%s",
                 subscription_status.get(NOTIFY_UUID, "not reported"),
                 subscription_status.get(COUNTDOWN_UUID, "not reported"),
                 subscription_status.get(STATUS_NOTIFY_UUID, "not reported"),
+                subscription_status.get(BATTERY_LEVEL_UUID, "not reported"),
             )
 
             if self._generation is HunterGeneration.SECOND:
@@ -433,7 +470,7 @@ class HunterBLEManager:
         await self.ensure_connected()
         try:
             value = await self.connection.read(BATTERY_LEVEL_UUID)
-            battery = int(value[0]) if value else None
+            battery = self._parse_battery_payload(value)
         except Exception as err:
             # Battery level is optional telemetry. A transient GATT/proxy read
             # failure must not make the coordinator unavailable or discard the
