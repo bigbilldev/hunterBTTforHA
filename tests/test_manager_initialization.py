@@ -68,6 +68,40 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(manager.transaction.writes, [])
 
+    async def test_ff84_read_failure_logs_gatt_context_and_does_not_write_ff83(self):
+        from types import SimpleNamespace
+
+        manager = HunterBLEManager.__new__(HunterBLEManager)
+        manager.state = HunterState()
+        manager.transaction = FakeInitializationTransaction()
+        manager._zone_enabled = {1: 1, 2: 1}
+        manager.protocol_initialized = False
+        manager.connection = SimpleNamespace(
+            gatt_inventory=[
+                {
+                    "uuid": TIME_UUID,
+                    "handle": 27,
+                    "properties": ["read", "write"],
+                }
+            ]
+        )
+
+        async def failed_clock_read(uuid):
+            if uuid == TIME_UUID:
+                raise RuntimeError("GATT Error 133")
+            raise AssertionError(f"Unexpected GATT read: {uuid}")
+
+        manager.transaction.read = failed_clock_read
+        with self.assertLogs("hunter_btt.bluetooth.manager", level="WARNING") as logs:
+            with self.assertRaisesRegex(RuntimeError, "GATT Error 133"):
+                await manager._initialize_second_generation()
+
+        self.assertIn("uuid=" + TIME_UUID, logs.output[0])
+        self.assertIn("handle=27", logs.output[0])
+        self.assertIn("properties=['read', 'write']", logs.output[0])
+        self.assertIn("error_type=RuntimeError", logs.output[0])
+        self.assertEqual(manager.transaction.writes, [])
+
     async def test_startup_uses_ff82_notification_and_never_reads_ff82(self):
         manager = HunterBLEManager.__new__(HunterBLEManager)
         manager.state = HunterState()
