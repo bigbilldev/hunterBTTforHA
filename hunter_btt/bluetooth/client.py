@@ -164,10 +164,43 @@ class HunterBLEClient:
                     device,
                     name=f"Hunter BTT - {self._address}",
                 )
+                self._log_gatt_inventory()
             except Exception:
                 self._client = None
                 raise
 
+
+    def _log_gatt_inventory(self) -> None:
+        """Log the discovered GATT table and writable characteristics."""
+        inventory = self.gatt_inventory
+        writable = self.writable_characteristics
+        ff83 = next(
+            (item for item in inventory if item["uuid"] == COMMAND_UUID),
+            None,
+        )
+        _LOGGER.info(
+            "Hunter GATT discovery complete: services=%d characteristics=%d "
+            "writable=%d FF83=%s",
+            len(self.service_uuids),
+            len(inventory),
+            len(writable),
+            "present" if ff83 else "missing",
+        )
+        for item in inventory:
+            _LOGGER.debug(
+                "Hunter GATT characteristic service=%s uuid=%s handle=%s properties=%s",
+                item["service_uuid"],
+                item["uuid"],
+                item["handle"],
+                item["properties"],
+            )
+        for item in writable:
+            _LOGGER.info(
+                "Hunter GATT writable characteristic uuid=%s handle=%s properties=%s",
+                item["uuid"],
+                item["handle"],
+                item["properties"],
+            )
 
     async def disconnect(self) -> None:
         async with self._lock:
