@@ -5,22 +5,18 @@ from __future__ import annotations
 import inspect
 import logging
 from dataclasses import asdict
-from datetime import timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant
-from homeassistant.util import dt as dt_util
 
 from ..models import HunterState
 from ..protocol.second_generation import (
     build_ff83,
-    build_ff84,
     merge_android_ff83,
     parse_ff82,
     parse_ff83,
-    parse_ff84,
 )
-from ..protocol.uuids import BATTERY_LEVEL_UUID, COMMAND_UUID, NOTIFY_UUID, TIME_UUID
+from ..protocol.uuids import BATTERY_LEVEL_UUID, COMMAND_UUID, NOTIFY_UUID
 from ..protocol.generation import (
     FCC0_SERVICE_UUID,
     SECOND_SERVICE_UUID,
@@ -280,20 +276,17 @@ class HunterBLEManager:
             ) from err
 
     async def _initialize_second_generation(self) -> None:
-        """Reproduce Android connectTwoInit before enabling manual controls."""
+        """Initialize manual controls using readable FF82 and FF83 state.
+
+        FF84 clock synchronization is deliberately non-blocking: some
+        controllers/proxies reject ATT reads on FF84 even when GATT metadata
+        advertises the read property. Clock synchronization is not required
+        to establish the FF83 manual-control path.
+        """
         self.protocol_initialized = False
         self.state["protocol_initialized"] = False
 
         async with self.transaction.transaction():
-            # Android reads FF84 before setting it to phone-local time + 1s.
-            clock_payload = await self.transaction.read(TIME_UUID)
-            parse_ff84(clock_payload)
-            await self.transaction.write(
-                TIME_UUID,
-                build_ff84(dt_util.now() + timedelta(seconds=1)),
-                response=True,
-            )
-
             status = parse_ff82(await self.transaction.read(NOTIFY_UUID))
             current_config = parse_ff83(
                 await self.transaction.read(COMMAND_UUID)
@@ -316,7 +309,7 @@ class HunterBLEManager:
         self.state["protocol_initialized"] = True
         _LOGGER.info(
             "Hunter second-generation initialization completed: "
-            "FF84 synchronized, FF82/FF83 read, FF83 state synchronized"
+            "FF82/FF83 read and FF83 state synchronized; FF84 clock sync skipped"
         )
 
     async def disconnect(self) -> None:
