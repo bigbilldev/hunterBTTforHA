@@ -329,7 +329,6 @@ class HunterBLEManager:
 
     async def refresh(self) -> HunterState:
         """Refresh the live values exposed to Home Assistant."""
-        await self.ensure_connected()
         await self.refresh_battery()
         return self.state
 
