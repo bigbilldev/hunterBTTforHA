@@ -51,9 +51,7 @@ class ManagerRefreshTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_battery_notification_does_not_overwrite_last_value(self):
         manager = HunterBLEManager.__new__(HunterBLEManager)
-        manager.transaction = __import__(
-            "hunter_btt.bluetooth.transaction", fromlist=["HunterTransactionEngine"]
-        ).HunterTransactionEngine(None)
+        manager.transaction = HunterTransactionEngine(None)
         manager.state = HunterState({"battery": 64})
         manager._listeners = set()
         manager._state_callback = None
