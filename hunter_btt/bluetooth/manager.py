@@ -4,18 +4,28 @@ from __future__ import annotations
 
 import inspect
 import logging
+from datetime import timedelta
 from typing import Any
+
+from homeassistant.util import dt as dt_util
 
 from homeassistant.core import HomeAssistant
 
 from ..models import HunterState
 from ..protocol.second_generation import (
     build_ff83,
+    build_ff84,
     merge_android_ff83,
     parse_ff82,
     parse_ff83,
+    parse_ff84,
 )
-from ..protocol.uuids import BATTERY_LEVEL_UUID, COMMAND_UUID, NOTIFY_UUID
+from ..protocol.uuids import (
+    BATTERY_LEVEL_UUID,
+    COMMAND_UUID,
+    NOTIFY_UUID,
+    TIME_UUID,
+)
 from ..protocol.generation import (
     FCC0_SERVICE_UUID,
     SECOND_SERVICE_UUID,
@@ -27,7 +37,11 @@ from ..protocol.generation import (
 )
 from .client import HunterBLEClient
 from .connection import HunterConnection
-from .transaction import HunterTransactionEngine, TransactionTimeout
+from .transaction import (
+    HunterTransactionEngine,
+    TransactionError,
+    TransactionTimeout,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -196,7 +210,21 @@ class HunterBLEManager:
             # FF82 is notification-driven on this controller. Discard any
             # payload retained from a previous connection before subscribing.
             self.transaction.clear_notification(NOTIFY_UUID)
-            await self.client.subscribe(self.transaction.notification)
+            subscription_status = await self.client.subscribe(
+                self.transaction.notification
+            )
+            _LOGGER.info(
+                "Hunter notification subscription results: FF82=%s FF8A=%s FF8F=%s",
+                subscription_status.get(NOTIFY_UUID, "not reported"),
+                subscription_status.get(
+                    "0000ff8a-0000-1000-8000-00805f9b34fb",
+                    "not reported",
+                ),
+                subscription_status.get(
+                    "0000ff8f-0000-1000-8000-00805f9b34fb",
+                    "not reported",
+                ),
+            )
 
             if self._generation is HunterGeneration.SECOND:
                 await self._initialize_second_generation_if_supported()
@@ -262,7 +290,7 @@ class HunterBLEManager:
 
         try:
             await self._initialize_second_generation()
-        except TransactionTimeout as err:
+        except (TransactionTimeout, TransactionError, ValueError) as err:
             _LOGGER.warning(
                 "Hunter connected, but second-generation valve control "
                 "initialization is incomplete: %s. No FF83 state was written.",
@@ -270,17 +298,28 @@ class HunterBLEManager:
             )
 
     async def _initialize_second_generation(self) -> None:
-        """Initialize manual controls from FF82 notifications and FF83 state.
+        """Follow Android's FF84 clock-sync, FF82 status, then FF83 merge flow.
 
-        FF82 is notification-driven; the controller rejects ATT reads on that
-        characteristic even though its GATT metadata may advertise read.
-        FF84 clock synchronization is also intentionally skipped because it
-        is not required for the manual-control path.
+        FF82 is notification-driven; never ATT-read it. Android first reads
+        FF84, writes the current local time plus one second, and then consumes
+        the resulting FF82 notification before synchronizing FF83 state.
         """
         self.protocol_initialized = False
         self.state["protocol_initialized"] = False
 
         async with self.transaction.transaction():
+            # Validate the controller's clock record before applying Android's
+            # local-time synchronization step.
+            parse_ff84(await self.transaction.read(TIME_UUID))
+            clock_payload = build_ff84(dt_util.now() + timedelta(seconds=1))
+            await self.transaction.write(
+                TIME_UUID,
+                clock_payload,
+                response=True,
+            )
+            _LOGGER.debug(
+                "Hunter FF84 clock synchronization written; waiting for FF82"
+            )
             status = parse_ff82(
                 await self.transaction.wait_for_notification(
                     NOTIFY_UUID,
@@ -306,7 +345,7 @@ class HunterBLEManager:
         self.state["protocol_initialized"] = True
         _LOGGER.info(
             "Hunter second-generation initialization completed: "
-            "FF82/FF83 read and FF83 state synchronized; FF84 clock sync skipped"
+            "FF84 clock synchronized, FF82 status received, and FF83 state synchronized"
         )
 
     async def disconnect(self) -> None:
