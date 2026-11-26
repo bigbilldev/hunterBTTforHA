@@ -1,9 +1,9 @@
 """Tests for Home Assistant runtime display units."""
 
 import unittest
+from types import SimpleNamespace
 
 from hunter_btt.number import HunterRuntimeNumber, minutes_to_seconds
-from types import SimpleNamespace
 
 from hunter_btt.sensor import HunterSensor, SENSORS, seconds_to_minutes
 
