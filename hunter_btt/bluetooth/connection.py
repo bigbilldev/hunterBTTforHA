@@ -40,6 +40,11 @@ class HunterConnection:
     def writable_characteristics(self) -> list[dict[str, object]]:
         return self.client.writable_characteristics
 
+    @property
+    def gatt_inventory(self) -> list[dict[str, object]]:
+        """Return the discovered GATT characteristics and their properties."""
+        return self.client.gatt_inventory
+
     def characteristic_properties(self, uuid: str) -> set[str]:
         return self.client.characteristic_properties(uuid)
 
