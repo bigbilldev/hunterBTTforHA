@@ -55,6 +55,10 @@ class TransactionError(RuntimeError):
     """A Hunter BLE transaction failed."""
 
 
+class TransactionWriteNotPermitted(TransactionError):
+    """The controller explicitly rejected a GATT write with ATT 0x03."""
+
+
 class TransactionTimeout(TransactionError):
     """A Hunter BLE transaction timed out."""
 
@@ -358,7 +362,7 @@ class HunterTransactionEngine:
                         payload_length,
                         err,
                     )
-                    raise TransactionError(
+                    raise TransactionWriteNotPermitted(
                         f"Controller rejected write to {uuid} "
                         "(ATT 0x03 Write Not Permitted); retry suppressed."
                     ) from err
