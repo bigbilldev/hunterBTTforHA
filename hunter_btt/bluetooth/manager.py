@@ -358,9 +358,10 @@ class HunterBLEManager:
     async def _initialize_second_generation(self) -> None:
         """Synchronize FF84 clock, then initialize FF83 from FF82 status.
 
-        FF84 is write-only in this initialization flow: do not read it or make
-        a successful FF84 read a prerequisite for guarded FF83 control.
-        FF82 is notification-driven and must never be ATT-read.
+        FF84 is synchronized best-effort without a prerequisite read.
+        Android then reads FF82 and FF83, merges the observed status into the
+        current FF83 configuration, and writes the resulting 12-byte state.
+        FF82 notifications remain subscribed and cached for live status events.
         """
         self.protocol_initialized = False
         self.state["protocol_initialized"] = False
