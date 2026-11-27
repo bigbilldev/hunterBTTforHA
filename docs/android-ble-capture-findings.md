@@ -50,9 +50,10 @@ three-character random key. The corresponding parser calls
 The transform is a reversible sequence of XOR and 8-bit rotations. For each
 round, the formatter XORs each byte with the current key byte, then rotates:
 left on rounds 0 and 2, right on round 1. The rotation count is the corresponding
-reverse-indexed key byte modulo eight. Decryption reverses the round order,
-rotation direction, and XOR order. This is not the separate DESede/CBC helper
-also present in the APK.
+reverse-indexed key byte modulo eight. For the captured key `x47`, the
+rotation counts are 7 (left), 4 (right), and 0 (left). Decryption reverses
+the round order, rotation direction, and XOR order. This is not the separate
+DESede/CBC helper also present in the APK.
 
 The captured FF81 value is:
 
@@ -62,7 +63,7 @@ Its byte-for-byte interpretation is:
 
 | Offset | Length | Field | Captured value |
 |---:|---:|---|---|
-| 0 | 10 | Encrypted plaintext | `B7 B7 B7 B7 F1 64 04 91 E2 25` |
+| 0 | 10 | Ciphertext (encrypted plaintext) | `B7 B7 B7 B7 F1 64 04 91 E2 25` |
 | 10 | 1 | `isSet` | `00` |
 | 11 | 3 | Random key | `78 34 37` (`x47`) |
 
