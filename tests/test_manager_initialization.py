@@ -2,7 +2,7 @@
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 import unittest
 
 from hunter_btt.bluetooth.manager import HunterBLEManager
@@ -36,10 +36,10 @@ class FakeInitializationTransaction:
     async def read(self, uuid):
         self.operations.append(("read", uuid))
         self.reads.append(uuid)
+        if uuid == TIME_UUID:
+            raise AssertionError("FF84 must be synchronized by write, never read")
         if uuid == NOTIFY_UUID:
             raise AssertionError("FF82 must be received through notifications, not read")
-        if uuid == TIME_UUID:
-            return bytes.fromhex("07 ea 08 03 0c 0f 22 01")
         if uuid == COMMAND_UUID:
             return FF83_READ_CAPTURE
         raise AssertionError(f"Unexpected GATT read: {uuid}")
@@ -50,59 +50,25 @@ class FakeInitializationTransaction:
 
 
 class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_ff84_invalid_clock_aborts_before_ff83_write(self):
+    async def test_clock_sync_is_a_distinct_ff84_write_operation(self):
         manager = HunterBLEManager.__new__(HunterBLEManager)
-        manager.state = HunterState()
         manager.transaction = FakeInitializationTransaction()
-        manager._zone_enabled = {1: 1, 2: 1}
-        manager.protocol_initialized = False
 
-        async def invalid_clock_read(uuid):
-            if uuid == TIME_UUID:
-                return b"invalid"
-            raise AssertionError(f"Unexpected GATT read: {uuid}")
+        fixed_now = datetime(2026, 8, 3, 12, 15, 33, tzinfo=timezone.utc)
+        with patch("hunter_btt.bluetooth.manager.dt_util.now", return_value=fixed_now):
+            await manager._synchronize_clock()
 
-        manager.transaction.read = invalid_clock_read
-        with self.assertRaisesRegex(ValueError, "FF84 payload must be 8 bytes"):
-            await manager._initialize_second_generation()
-
-        self.assertEqual(manager.transaction.writes, [])
-
-    async def test_ff84_read_failure_logs_gatt_context_and_does_not_write_ff83(self):
-        from types import SimpleNamespace
-
-        manager = HunterBLEManager.__new__(HunterBLEManager)
-        manager.state = HunterState()
-        manager.transaction = FakeInitializationTransaction()
-        manager._zone_enabled = {1: 1, 2: 1}
-        manager.protocol_initialized = False
-        manager.connection = SimpleNamespace(
-            gatt_inventory=[
-                {
-                    "uuid": TIME_UUID,
-                    "handle": 27,
-                    "properties": ["read", "write"],
-                }
-            ]
+        self.assertEqual(
+            manager.transaction.writes,
+            [(TIME_UUID, bytes.fromhex("07 ea 08 03 0c 0f 22 01"), True)],
+        )
+        self.assertEqual(manager.transaction.reads, [])
+        self.assertEqual(
+            manager.transaction.operations,
+            [("write", TIME_UUID, bytes.fromhex("07 ea 08 03 0c 0f 22 01"), True)],
         )
 
-        async def failed_clock_read(uuid):
-            if uuid == TIME_UUID:
-                raise RuntimeError("GATT Error 133")
-            raise AssertionError(f"Unexpected GATT read: {uuid}")
-
-        manager.transaction.read = failed_clock_read
-        with self.assertLogs("hunter_btt.bluetooth.manager", level="WARNING") as logs:
-            with self.assertRaisesRegex(RuntimeError, "GATT Error 133"):
-                await manager._initialize_second_generation()
-
-        self.assertIn("uuid=" + TIME_UUID, logs.output[0])
-        self.assertIn("handle=27", logs.output[0])
-        self.assertIn("properties=['read', 'write']", logs.output[0])
-        self.assertIn("error_type=RuntimeError", logs.output[0])
-        self.assertEqual(manager.transaction.writes, [])
-
-    async def test_startup_uses_ff82_notification_and_never_reads_ff82(self):
+    async def test_startup_does_not_read_ff84_and_enables_ff83_after_status_merge(self):
         manager = HunterBLEManager.__new__(HunterBLEManager)
         manager.state = HunterState()
         manager.transaction = FakeInitializationTransaction()
@@ -115,7 +81,7 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         expected_ff84 = bytes.fromhex("07 ea 08 03 0c 0f 22 01")
         self.assertEqual(manager.transaction.waits, [(NOTIFY_UUID, 8.0)])
-        self.assertEqual(manager.transaction.reads, [TIME_UUID, COMMAND_UUID])
+        self.assertEqual(manager.transaction.reads, [COMMAND_UUID])
         self.assertEqual(
             manager.transaction.writes,
             [
@@ -126,7 +92,6 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             manager.transaction.operations,
             [
-                ("read", TIME_UUID),
                 ("write", TIME_UUID, expected_ff84, True),
                 ("notify", NOTIFY_UUID),
                 ("read", COMMAND_UUID),
@@ -135,6 +100,26 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(manager.protocol_initialized)
         self.assertTrue(manager.state["protocol_initialized"])
+
+    async def test_ff84_write_failure_does_not_mark_protocol_initialized(self):
+        manager = HunterBLEManager.__new__(HunterBLEManager)
+        manager.state = HunterState()
+        manager.transaction = FakeInitializationTransaction()
+        manager._zone_enabled = {1: 1, 2: 1}
+        manager.protocol_initialized = False
+        manager.transaction.write = AsyncMock(
+            side_effect=RuntimeError("FF84 write failed")
+        )
+
+        fixed_now = datetime(2026, 8, 3, 12, 15, 33, tzinfo=timezone.utc)
+        with patch("hunter_btt.bluetooth.manager.dt_util.now", return_value=fixed_now):
+            with self.assertRaisesRegex(RuntimeError, "FF84 write failed"):
+                await manager._initialize_second_generation()
+
+        self.assertFalse(manager.protocol_initialized)
+        self.assertFalse(manager.state["protocol_initialized"])
+        self.assertEqual(manager.transaction.waits, [])
+        self.assertEqual(manager.transaction.reads, [])
 
 
 if __name__ == "__main__":

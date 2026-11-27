@@ -17,7 +17,6 @@ from ..protocol.second_generation import (
     merge_android_ff83,
     parse_ff82,
     parse_ff83,
-    parse_ff84,
 )
 from ..protocol.uuids import (
     BATTERY_LEVEL_UUID,
@@ -329,61 +328,39 @@ class HunterBLEManager:
                 err,
             )
 
-    async def _initialize_second_generation(self) -> None:
-        """Follow Android's FF84 clock-sync, FF82 status, then FF83 merge flow.
+    async def _synchronize_clock(self) -> None:
+        """Write the phone's local time plus one second to FF84.
 
-        FF82 is notification-driven; never ATT-read it. Android first reads
-        FF84, writes the current local time plus one second, and then consumes
-        the resulting FF82 notification before synchronizing FF83 state.
+        Android's connection initialization sends this clock update without
+        depending on an FF84 read or using a read response to build the payload.
+        Keep clock synchronization explicit and separate from FF82/FF83 state
+        synchronization.
+        """
+        clock_payload = build_ff84(dt_util.now() + timedelta(seconds=1))
+        await self.transaction.write(
+            TIME_UUID,
+            clock_payload,
+            response=True,
+        )
+        _LOGGER.debug("Hunter FF84 clock synchronization written")
+
+    async def _initialize_second_generation(self) -> None:
+        """Synchronize FF84 clock, then initialize FF83 from FF82 status.
+
+        FF84 is write-only in this initialization flow: do not read it or make
+        a successful FF84 read a prerequisite for guarded FF83 control.
+        FF82 is notification-driven and must never be ATT-read.
         """
         self.protocol_initialized = False
         self.state["protocol_initialized"] = False
 
         async with self.transaction.transaction():
-            # Validate the controller's clock record before applying Android's
-            # local-time synchronization step. Keep diagnostics separate from
-            # protocol behavior: do not change the FF84 payload or sequence here.
-            clock_record: bytes | None = None
-            try:
-                clock_record = await self.transaction.read(TIME_UUID)
-                parse_ff84(clock_record)
-            except Exception as err:
-                # Diagnostics must not mask the original FF84 failure.
-                # Some isolated/unit-test managers do not have a connection
-                # object, and inventory entries may not all be mappings.
-                connection = getattr(self, "connection", None)
-                inventory = getattr(connection, "gatt_inventory", []) or []
-                characteristic = next(
-                    (
-                        item
-                        for item in inventory
-                        if isinstance(item, dict)
-                        and str(item.get("uuid", "")).strip().lower() == TIME_UUID
-                    ),
-                    {},
-                )
-                _LOGGER.warning(
-                    "Hunter FF84 read/validation failed before initialization: "
-                    "uuid=%s handle=%s properties=%s response_len=%s "
-                    "error_type=%s error=%s",
-                    TIME_UUID,
-                    characteristic.get("handle"),
-                    characteristic.get("properties", []),
-                    len(clock_record) if isinstance(clock_record, bytes) else None,
-                    type(err).__name__,
-                    err,
-                    exc_info=True,
-                )
-                raise
+            # Clock synchronization is an independent write operation. Its
+            # payload is built from local time, not from a controller readback.
+            await self._synchronize_clock()
 
-            clock_payload = build_ff84(dt_util.now() + timedelta(seconds=1))
-            await self.transaction.write(
-                TIME_UUID,
-                clock_payload,
-                response=True,
-            )
             _LOGGER.debug(
-                "Hunter FF84 clock synchronization written; waiting for FF82"
+                "Hunter FF84 clock synchronization complete; waiting for FF82"
             )
             status = parse_ff82(
                 await self.transaction.wait_for_notification(
@@ -410,7 +387,8 @@ class HunterBLEManager:
         self.state["protocol_initialized"] = True
         _LOGGER.info(
             "Hunter second-generation initialization completed: "
-            "FF84 clock synchronized, FF82 status received, and FF83 state synchronized"
+            "FF84 clock synchronization written, FF82 status received, "
+            "and FF83 state synchronized"
         )
 
     async def disconnect(self) -> None:
