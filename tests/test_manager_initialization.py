@@ -203,7 +203,7 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
                 await manager._initialize_second_generation()
 
         self.assertEqual(transaction.reads, [NOTIFY_UUID, COMMAND_UUID])
-        self.assertEqual([item[0] for item in transaction.writes], [TIME_UUID])
+        self.assertEqual([item[0] for item in transaction.writes], [PASSCODE_UUID, TIME_UUID])
         self.assertFalse(manager.protocol_initialized)
         self.assertFalse(manager.state["protocol_initialized"])
 
