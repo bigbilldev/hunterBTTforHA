@@ -30,10 +30,19 @@ In capture order, the Android app sends successful ATT Write Requests:
 These occur before the first manual FF86/FF83 start transaction. Their purpose and
 whether each is required to enable FF86 writes are not established by this capture.
 
-The FF81 value is 14 bytes. Do not copy it into the integration or assume it is a
-passcode. The separately inspected 6.1.7 APK's `Second_81_Protocol` serializer
-produces four bytes, and the capture identifies the app version as 5.0.1.4. The
-version and payload discrepancy must be resolved before implementing FF81 setup.
+The capture was made with HunterBTT Android app version 6.1.49 (confirmed by the
+user). Its FF81 value is 14 bytes:
+
+`B7 B7 B7 B7 F1 64 04 91 E2 25 00 78 34 37`
+
+The older 5.0 APK was separately inspected. Its `BTT2.FF81(String)` serializer
+converts each input character to a zero-prefixed hexadecimal numeric value and
+returns a hex string for the FF81 write. That is a different, passcode-derived
+format and does not generate the captured 14-byte value. The previously inspected
+6.1.7 source also has a different four-byte password serializer. Neither older
+implementation explains the 6.1.49 capture. The integration therefore uses the
+exact 14-byte value observed in the 6.1.49 ATT Write Request; it does not attempt
+to recreate either older serializer.
 
 ## Captured manual START and STOP
 
@@ -72,11 +81,15 @@ protocol analysis.
 - Android uses ATT Write Request for these writes; changing HA to Write Command
   is not supported by this evidence.
 - The capture contains FF81/FF84/FF83 initialization writes before manual control.
-  Their semantics are unresolved. They may be relevant to the HA FF86
-  `Write Not Permitted` rejection, but causality is not proven.
-- Do not hard-code the observed 14-byte FF81 value, add speculative
-  authentication, or issue experimental watering commands until the initialization
-  sequence is understood.
+  FF81 is now sent as the exact 14-byte value captured from app version 6.1.49,
+  before the best-effort FF84 clock write and FF82/FF83 state exchange. The
+  semantic meaning of the opaque FF81 value remains unresolved, and its
+  portability across controller firmware/device variants still requires
+  hardware validation. It may be relevant to the HA FF86 `Write Not Permitted`
+  rejection, but causality is not proven.
+- The FF81 initialization write is limited to the single captured 6.1.49 value.
+  Do not infer that it is a general password algorithm or reuse it for other
+  firmware/device variants without additional captures.
 
 ## Validation status
 
