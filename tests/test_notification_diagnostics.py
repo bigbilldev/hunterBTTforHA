@@ -30,8 +30,9 @@ class FakeBleakClient:
         self.is_connected = True
         self.callbacks = {}
 
-    async def start_notify(self, uuid, callback):
-        self.callbacks[uuid] = callback
+    async def start_notify(self, characteristic, callback):
+        # Bleak receives the discovered characteristic object, not a UUID.
+        self.callbacks[str(characteristic.uuid).strip().lower()] = callback
 
 
 class NotificationDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
