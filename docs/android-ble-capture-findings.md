@@ -102,9 +102,9 @@ was sent by this change.
 
 The ATT discovery responses and CCCD Write Requests in the same Android
 6.1.49 capture identify six additional notification characteristics. The
-CCCD descriptor handles receive `01 00` writes in packets 420, 423, 427,
-430, 433, 439, and 445 (the three previously mapped core CCCDs are handles
-`0x0017`/FF82, `0x0028`/FF8A, and `0x0033`/FF8F):
+CCCD descriptor handles receive `01 00` writes before FF81. The six additional
+CCCD writes are packets 420, 423, 427, 433, 439, and 445; the three previously
+mapped core CCCD writes are packets 430 (FF8F), 436 (FF8A), and 442 (FF82):
 
 | CCCD handle | Characteristic value handle | UUID | Captured Android-side role |
 |---:|---:|---|---|
@@ -120,8 +120,10 @@ this capture. The descriptor-to-characteristic association is established by
 the ATT characteristic declaration/value handles and the following CCCD
 descriptor handles, not by guessing from UUID names.
 
-The inspected decompiled Android source maps FF99 and FF9B to zone image
-receivers. FF9E, FFA2, and FFA3 participate in the irrigation-log receiver:
+The inspected decompiled Android 6.1.7 source (older than the user's
+confirmed 6.1.49 capture) maps FF99 and FF9B to zone image receivers. This
+source is semantic corroboration, not the exact app build used for the
+capture. FF9E, FFA2, and FFA3 participate in the irrigation-log receiver:
 FFA2 supplies the total record count and FF9E/FFA3 carry decoded zone,
 timestamp, infiltration-time, and run-time fields. In the capture, FFA3
 notifications occur after watering countdown activity, not in the startup
