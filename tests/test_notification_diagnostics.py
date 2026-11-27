@@ -85,8 +85,9 @@ class NotificationDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("uuid=" + NOTIFY_UUID, output)
         self.assertIn("payload_len=3", output)
         self.assertIn("payload=01 02 03", output)
-        # Other characteristics continue to use the generic receive log.
-        self.assertIn("notification received uuid=" + BATTERY_LEVEL_UUID, output)
+        # Other characteristics use the generic, DEBUG-level receive log.
+        self.assertIn("Hunter BLE notification received at=", output)
+        self.assertIn("uuid=" + BATTERY_LEVEL_UUID, output)
         self.assertIn("payload_len=1", output)
 
 
