@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from ..models import HunterState
+from ..protocol.ff81 import build_ff81_payload
 from ..protocol.second_generation import (
     build_ff83,
     build_ff84,
@@ -20,6 +21,7 @@ from ..protocol.second_generation import (
 )
 from ..protocol.uuids import (
     BATTERY_LEVEL_UUID,
+    CLIENT_ID_UUID,
     COMMAND_UUID,
     COUNTDOWN_UUID,
     NOTIFY_UUID,
@@ -47,11 +49,6 @@ from .transaction import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-# Exact FF81 write observed during HunterBTT Android 6.1.49 initialization.
-# The older 5.0 APK uses a different, passcode-derived serializer.
-FF81_INIT_PAYLOAD = bytes.fromhex("B7 B7 B7 B7 F1 64 04 91 E2 25 00 78 34 37")
-
 
 class HunterManagerError(Exception):
     """Raised for Hunter manager errors."""
@@ -375,17 +372,36 @@ class HunterBLEManager:
         self.state["protocol_initialized"] = False
 
         async with self.transaction.transaction():
-            # Android 6.1.49 writes this FF81 initialization payload before
-            # clock sync and the FF82/FF83 state exchange. Treat rejection as
-            # an initialization failure: do not proceed to FF83 state writes.
+            # Android 6.1.49 reads FFA5 immediately before FF81. The six-byte
+            # value is the client ID incorporated into the FF81 plaintext.
+            # Never substitute FFA0/FFA1 or the all-zero wrapper default.
+            client_id_properties = self.connection.characteristic_properties(
+                CLIENT_ID_UUID
+            )
+            if "read" not in client_id_properties:
+                raise TransactionError(
+                    "Required FFA5 client-ID characteristic is not readable; "
+                    "FF81 initialization was not attempted. "
+                    f"Discovered properties={sorted(client_id_properties) or 'missing'}."
+                )
+
+            client_id = await self.transaction.read(CLIENT_ID_UUID)
+            if len(client_id) != 6 or not any(client_id):
+                raise ValueError(
+                    "FFA5 must return a non-zero six-byte client ID; "
+                    f"received {len(client_id)} bytes ({client_id.hex(' ')}). "
+                    "FF81 initialization was not attempted."
+                )
+
+            ff81_payload = build_ff81_payload(self.passcode, client_id)
             await self.transaction.write(
                 PASSCODE_UUID,
-                FF81_INIT_PAYLOAD,
+                ff81_payload,
                 response=True,
             )
             _LOGGER.info(
-                "Hunter FF81 initialization packet written (%d bytes)",
-                len(FF81_INIT_PAYLOAD),
+                "Hunter FF81 initialization packet written using FFA5 client ID (%d bytes)",
+                len(ff81_payload),
             )
 
             # Clock synchronization is best-effort. Some controllers expose
