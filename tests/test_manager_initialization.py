@@ -130,7 +130,7 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
             [("write", TIME_UUID, expected, True)],
         )
 
-    async def test_android_startup_reads_ff82_then_ff83_and_writes_merged_ff83(self):
+    async def test_android_startup_reads_ffa5_then_ff81_then_ff82_ff83(self):
         manager = self._manager()
 
         with (
