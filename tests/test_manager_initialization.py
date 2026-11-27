@@ -7,9 +7,9 @@ import unittest
 
 from hunter_btt.bluetooth.manager import HunterBLEManager
 from hunter_btt.bluetooth.transaction import (
+    HunterTransactionEngine,
     TransactionReadNotPermitted,
     TransactionWriteNotPermitted,
-    HunterTransactionEngine,
 )
 from hunter_btt.models import HunterState
 from hunter_btt.protocol.uuids import COMMAND_UUID, NOTIFY_UUID, TIME_UUID
@@ -51,6 +51,28 @@ class FakeInitializationTransaction:
         self.writes.append((uuid, bytes(payload), response))
         if uuid in self.write_errors:
             raise self.write_errors[uuid]
+
+
+class FakeGattClient:
+    """Minimal GATT client used by the real transaction engine."""
+
+    async def read(self, uuid):
+        if uuid == NOTIFY_UUID:
+            return FF82_CAPTURE
+        if uuid == COMMAND_UUID:
+            return FF83_READ_CAPTURE
+        raise AssertionError(f"Unexpected GATT read: {uuid}")
+
+    async def write(self, uuid, payload, *, response=None):
+        return None
+
+
+class FakeConnection:
+    def __init__(self):
+        self.client = FakeGattClient()
+
+    async def ensure_connection(self):
+        return None
 
 
 class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
@@ -180,7 +202,7 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(manager.state["protocol_initialized"])
 
     async def test_ff82_notifications_remain_cached_after_initialization(self):
-        transaction = HunterTransactionEngine(connection=None)
+        transaction = HunterTransactionEngine(connection=FakeConnection())
         manager = self._manager(transaction)
 
         with self._fixed_clock():
