@@ -12,6 +12,7 @@ from hunter_btt.bluetooth.transaction import (
     TransactionWriteNotPermitted,
 )
 from hunter_btt.models import HunterState
+from hunter_btt.protocol.generation import HunterGeneration
 from hunter_btt.protocol.uuids import COMMAND_UUID, NOTIFY_UUID, TIME_UUID
 
 
@@ -203,6 +204,7 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ff82_notifications_remain_cached_after_initialization(self):
         transaction = HunterTransactionEngine(connection=FakeConnection())
+        transaction.set_generation(HunterGeneration.SECOND)
         manager = self._manager(transaction)
 
         with self._fixed_clock():
