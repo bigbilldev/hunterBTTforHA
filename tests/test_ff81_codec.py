@@ -37,6 +37,19 @@ class FF81CodecTests(unittest.TestCase):
         self.assertFalse(decoded.is_set)
         self.assertEqual(decoded.random_key, "x47")
 
+    def test_configured_passcode_is_encoded_as_four_numeric_bytes(self):
+        payload = build_ff81_payload(
+            "1234",
+            CAPTURED_CLIENT_ID,
+            random_key="x47",
+        )
+        decoded = parse_ff81_payload(payload)
+        self.assertEqual(decoded.passcode, "1234")
+        self.assertEqual(
+            decrypt_stream(payload[:10], b"x47")[:4],
+            bytes((1, 2, 3, 4)),
+        )
+
     def test_encrypt_and_decrypt_are_inverse_for_multiple_payloads(self):
         for payload in (
             CAPTURED_PLAINTEXT,
