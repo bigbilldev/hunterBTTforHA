@@ -41,20 +41,23 @@ STATUS_NOTIFY_UUID: Final = "0000ff8f-0000-1000-8000-00805f9b34fb"
 
 # Additional second-generation notification characteristics enabled by the
 # HunterBTT Android 6.1.49 app before its FF81 initialization write.
-# Their meanings are based on ATT handle mapping and the inspected Android
-# protocol classes; FFA5 remains unidentified.
+# FFA5 supplies the six-byte client ID consumed by the Android 6.1.49 FF81
+# formatter. The characteristic is read during initialization and subscribed
+# in the captured CCCD sequence.
 ZONE1_IMAGE_NOTIFY_UUID: Final = "0000ff99-0000-1000-8000-00805f9b34fb"
 ZONE2_IMAGE_NOTIFY_UUID: Final = "0000ff9b-0000-1000-8000-00805f9b34fb"
 IRRIGATION_LOG_PAGE_UUID: Final = "0000ff9e-0000-1000-8000-00805f9b34fb"
 IRRIGATION_LOG_COUNT_UUID: Final = "0000ffa2-0000-1000-8000-00805f9b34fb"
 IRRIGATION_LOG_RECORD_UUID: Final = "0000ffa3-0000-1000-8000-00805f9b34fb"
-UNKNOWN_FFA5_NOTIFY_UUID: Final = "0000ffa5-0000-1000-8000-00805f9b34fb"
+CLIENT_ID_UUID: Final = "0000ffa5-0000-1000-8000-00805f9b34fb"
+# Backwards-compatible name retained for callers using the earlier mapping.
+UNKNOWN_FFA5_NOTIFY_UUID: Final = CLIENT_ID_UUID
 
 # Exact order of the nine proprietary CCCD writes in the Android capture.
 # The standard Battery Level CCCD is not part of this captured sequence.
 SECOND_GEN_INIT_NOTIFICATION_UUIDS: Final = (
     ZONE2_IMAGE_NOTIFY_UUID,       # CCCD 0x004D
-    UNKNOWN_FFA5_NOTIFY_UUID,      # CCCD 0x0065
+    CLIENT_ID_UUID,                # CCCD 0x0065
     IRRIGATION_LOG_COUNT_UUID,     # CCCD 0x0054
     STATUS_NOTIFY_UUID,            # CCCD 0x0033 (FF8F)
     IRRIGATION_LOG_PAGE_UUID,      # CCCD 0x0057
