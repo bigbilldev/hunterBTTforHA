@@ -248,9 +248,11 @@ class HunterBLEManager:
             self.transaction.clear_notification(BATTERY_LEVEL_UUID)
             _LOGGER.info(
                 "Hunter Android initialization comparison: the reference flow "
-                "enables FF82/FF8A/FF8F notifications before connectTwoInit; "
-                "connectTwoInit then attempts FF84 read/write, reads FF82 and "
-                "FF83, merges status, and writes FF83. This controller's safe "
+                "enables FF82/FF8A/FF8F notifications before connectTwoInit. "
+                "Observed connectTwoInit variants differ on an FF84 read "
+                "(one issues it and ignores the callback; another omits it); "
+                "both proceed with FF84 write, FF82/FF83 reads, status merge, "
+                "and FF83 write. This controller's safe "
                 "path does not ATT-read FF82 and does not invent an additional "
                 "initialization write."
             )
