@@ -41,6 +41,7 @@ from .transaction import (
     HunterTransactionEngine,
     TransactionError,
     TransactionTimeout,
+    TransactionWriteNotPermitted,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -355,12 +356,30 @@ class HunterBLEManager:
         self.state["protocol_initialized"] = False
 
         async with self.transaction.transaction():
-            # Clock synchronization is an independent write operation. Its
-            # payload is built from local time, not from a controller readback.
-            await self._synchronize_clock()
+            # Clock synchronization is best-effort. Some controllers expose
+            # FF84 as writable in GATT discovery but reject the ATT write.
+            # The transaction layer identifies ATT 0x03 explicitly and never
+            # retries that permanent rejection. Neither that rejection nor
+            # another clock-sync failure may bypass the FF82/FF83 readiness
+            # checks below.
+            try:
+                await self._synchronize_clock()
+            except TransactionWriteNotPermitted as err:
+                _LOGGER.warning(
+                    "Hunter FF84 clock synchronization is unsupported by "
+                    "this controller (ATT 0x03 Write Not Permitted); "
+                    "continuing initialization without clock sync: %s",
+                    err,
+                )
+            except Exception as err:
+                _LOGGER.warning(
+                    "Hunter FF84 best-effort clock synchronization failed; "
+                    "continuing with FF82/FF83 initialization: %s",
+                    err,
+                )
 
             _LOGGER.debug(
-                "Hunter FF84 clock synchronization complete; waiting for FF82"
+                "Hunter FF84 clock synchronization attempt complete; waiting for FF82"
             )
             status = parse_ff82(
                 await self.transaction.wait_for_notification(
