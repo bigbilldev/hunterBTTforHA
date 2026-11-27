@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 import unittest
 
-from hunter_btt.bluetooth.manager import HunterBLEManager
+from hunter_btt.bluetooth.manager import FF81_INIT_PAYLOAD, HunterBLEManager
 from hunter_btt.bluetooth.transaction import (
     HunterTransactionEngine,
     TransactionReadNotPermitted,
@@ -13,9 +13,10 @@ from hunter_btt.bluetooth.transaction import (
 )
 from hunter_btt.models import HunterState
 from hunter_btt.protocol.generation import HunterGeneration
-from hunter_btt.protocol.uuids import COMMAND_UUID, NOTIFY_UUID, TIME_UUID
+from hunter_btt.protocol.uuids import COMMAND_UUID, NOTIFY_UUID, PASSCODE_UUID, TIME_UUID
 
 
+FF81_CAPTURE = bytes.fromhex("B7 B7 B7 B7 F1 64 04 91 E2 25 00 78 34 37")
 FF82_CAPTURE = bytes.fromhex("01 00 01 01 00 00 01 01 00 00 01 01 80 00")
 FF83_READ_CAPTURE = bytes.fromhex("01 00 02 01 00 02 01 00 00 00 00 00")
 FF83_INIT_CAPTURE = bytes.fromhex("01 00 01 01 00 01 01 00 00 00 00 00")
@@ -113,9 +114,11 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         expected_ff84 = bytes.fromhex("07 ea 08 03 0c 0f 22 01")
         self.assertEqual(manager.transaction.reads, [NOTIFY_UUID, COMMAND_UUID])
+        self.assertEqual(FF81_INIT_PAYLOAD, FF81_CAPTURE)
         self.assertEqual(
             manager.transaction.writes,
             [
+                (PASSCODE_UUID, FF81_CAPTURE, True),
                 (TIME_UUID, expected_ff84, True),
                 (COMMAND_UUID, FF83_INIT_CAPTURE, True),
             ],
@@ -123,6 +126,7 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             manager.transaction.operations,
             [
+                ("write", PASSCODE_UUID, FF81_CAPTURE, True),
                 ("write", TIME_UUID, expected_ff84, True),
                 ("read", NOTIFY_UUID),
                 ("read", COMMAND_UUID),
@@ -131,6 +135,20 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(manager.protocol_initialized)
         self.assertTrue(manager.state["protocol_initialized"])
+
+    async def test_ff81_write_failure_stops_before_ff82_and_ff83(self):
+        transaction = FakeInitializationTransaction()
+        transaction.write_errors[PASSCODE_UUID] = RuntimeError("FF81 write failed")
+        manager = self._manager(transaction)
+
+        with self._fixed_clock():
+            with self.assertRaises(RuntimeError):
+                await manager._initialize_second_generation()
+
+        self.assertEqual(transaction.reads, [])
+        self.assertEqual([item[0] for item in transaction.writes], [PASSCODE_UUID])
+        self.assertFalse(manager.protocol_initialized)
+        self.assertFalse(manager.state["protocol_initialized"])
 
     async def test_ff82_read_denied_keeps_ff83_uninitialized_and_does_not_write(self):
         transaction = FakeInitializationTransaction()
@@ -144,7 +162,7 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
                 await manager._initialize_second_generation()
 
         self.assertEqual(transaction.reads, [NOTIFY_UUID])
-        self.assertEqual([item[0] for item in transaction.writes], [TIME_UUID])
+        self.assertEqual([item[0] for item in transaction.writes], [PASSCODE_UUID, TIME_UUID])
         self.assertFalse(manager.protocol_initialized)
         self.assertFalse(manager.state["protocol_initialized"])
 
@@ -159,7 +177,7 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
             await manager._initialize_second_generation()
 
         self.assertEqual(transaction.reads, [NOTIFY_UUID, COMMAND_UUID])
-        self.assertEqual([item[0] for item in transaction.writes], [TIME_UUID, COMMAND_UUID])
+        self.assertEqual([item[0] for item in transaction.writes], [PASSCODE_UUID, TIME_UUID, COMMAND_UUID])
         self.assertTrue(manager.protocol_initialized)
         self.assertTrue(manager.state["protocol_initialized"])
 
@@ -185,7 +203,7 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
                 await manager._initialize_second_generation()
 
         self.assertEqual(transaction.reads, [NOTIFY_UUID, COMMAND_UUID])
-        self.assertEqual([item[0] for item in transaction.writes], [TIME_UUID])
+        self.assertEqual([item[0] for item in transaction.writes], [PASSCODE_UUID, TIME_UUID])
         self.assertFalse(manager.protocol_initialized)
         self.assertFalse(manager.state["protocol_initialized"])
 
@@ -198,7 +216,7 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(RuntimeError):
                 await manager._initialize_second_generation()
 
-        self.assertEqual([item[0] for item in transaction.writes], [TIME_UUID, COMMAND_UUID])
+        self.assertEqual([item[0] for item in transaction.writes], [PASSCODE_UUID, TIME_UUID, COMMAND_UUID])
         self.assertFalse(manager.protocol_initialized)
         self.assertFalse(manager.state["protocol_initialized"])
 

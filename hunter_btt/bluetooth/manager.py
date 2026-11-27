@@ -23,6 +23,7 @@ from ..protocol.uuids import (
     COMMAND_UUID,
     COUNTDOWN_UUID,
     NOTIFY_UUID,
+    PASSCODE_UUID,
     STATUS_NOTIFY_UUID,
     TIME_UUID,
 )
@@ -45,6 +46,10 @@ from .transaction import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Exact FF81 write observed during HunterBTT Android 6.1.49 initialization.
+# The older 5.0 APK uses a different, passcode-derived serializer.
+FF81_INIT_PAYLOAD = bytes.fromhex("B7 B7 B7 B7 F1 64 04 91 E2 25 00 78 34 37")
 
 
 class HunterManagerError(Exception):
@@ -367,6 +372,19 @@ class HunterBLEManager:
         self.state["protocol_initialized"] = False
 
         async with self.transaction.transaction():
+            # Android 6.1.49 writes this FF81 initialization payload before
+            # clock sync and the FF82/FF83 state exchange. Treat rejection as
+            # an initialization failure: do not proceed to FF83 state writes.
+            await self.transaction.write(
+                PASSCODE_UUID,
+                FF81_INIT_PAYLOAD,
+                response=True,
+            )
+            _LOGGER.info(
+                "Hunter FF81 initialization packet written (%d bytes)",
+                len(FF81_INIT_PAYLOAD),
+            )
+
             # Clock synchronization is best-effort. Some controllers expose
             # FF84 as writable in GATT discovery but reject the ATT write.
             # The transaction layer identifies ATT 0x03 explicitly and never
