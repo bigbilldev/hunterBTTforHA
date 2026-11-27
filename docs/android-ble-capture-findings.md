@@ -106,14 +106,14 @@ CCCD descriptor handles receive `01 00` writes before FF81. The six additional
 CCCD writes are packets 420, 423, 427, 433, 439, and 445; the three previously
 mapped core CCCD writes are packets 430 (FF8F), 436 (FF8A), and 442 (FF82):
 
-| CCCD handle | Characteristic value handle | UUID | Captured Android-side role |
+| CCCD handle | Characteristic value handle | Characteristic UUID | Captured Android-side role |
 |---:|---:|---|---|
-| `0x0048` | `0x0047` | FF99 | Zone 1 image-transfer chunks |
-| `0x004D` | `0x004C` | FF9B | Zone 2 image-transfer chunks |
-| `0x0054` | `0x0053` | FFA2 | Irrigation-log total-record count |
-| `0x0057` | `0x0056` | FF9E | Irrigation-log records (two-zone record payload) |
-| `0x005A` | `0x0059` | FFA3 | Irrigation-log record payload |
-| `0x0065` | `0x0064` | FFA5 | Unknown; no matching application protocol handler identified |
+| `0x0048` | `0x0047` | `0000ff99-0000-1000-8000-00805f9b34fb` | Zone 1 image-transfer chunks |
+| `0x004D` | `0x004C` | `0000ff9b-0000-1000-8000-00805f9b34fb` | Zone 2 image-transfer chunks |
+| `0x0054` | `0x0053` | `0000ffa2-0000-1000-8000-00805f9b34fb` | Irrigation-log total-record count |
+| `0x0057` | `0x0056` | `0000ff9e-0000-1000-8000-00805f9b34fb` | Irrigation-log records (two-zone record payload) |
+| `0x005A` | `0x0059` | `0000ffa3-0000-1000-8000-00805f9b34fb` | Irrigation-log record payload |
+| `0x0065` | `0x0064` | `0000ffa5-0000-1000-8000-00805f9b34fb` | Unknown; no matching application protocol handler identified |
 
 All six characteristic declarations advertise read + notify properties in
 this capture. The descriptor-to-characteristic association is established by
