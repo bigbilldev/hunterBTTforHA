@@ -74,14 +74,20 @@ class NotificationDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-        output = "\n".join(logs.output)
+        output = "\\n".join(logs.output)
         self.assertIn("notification subscription successful uuid=" + NOTIFY_UUID, output)
         self.assertIn("notification subscription successful uuid=" + COUNTDOWN_UUID, output)
         self.assertIn("notification subscription unavailable uuid=" + STATUS_NOTIFY_UUID, output)
         self.assertIn("notification subscription successful uuid=" + BATTERY_LEVEL_UUID, output)
-        self.assertIn("notification received uuid=" + NOTIFY_UUID, output)
-        self.assertIn("notification received uuid=" + BATTERY_LEVEL_UUID, output)
+        # FF82 has a dedicated diagnostic that includes timestamp, payload,
+        # characteristic identity, and active connection identity.
+        self.assertIn("Hunter FF82 notification received", output)
+        self.assertIn("uuid=" + NOTIFY_UUID, output)
         self.assertIn("payload_len=3", output)
+        self.assertIn("payload=01 02 03", output)
+        # Other characteristics continue to use the generic receive log.
+        self.assertIn("notification received uuid=" + BATTERY_LEVEL_UUID, output)
+        self.assertIn("payload_len=1", output)
 
 
 if __name__ == "__main__":
