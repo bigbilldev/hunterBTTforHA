@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from typing import Awaitable, Callable
 
@@ -135,6 +136,7 @@ class HunterTransactionEngine:
         self._last_ack: bytes | None = None
         self._notifications: dict[str, bytes] = {}
         self._notification_events: dict[str, asyncio.Event] = {}
+        self._notification_sequence: dict[str, int] = {}
         self._generation = HunterGeneration.UNKNOWN
 
     @property
@@ -159,9 +161,22 @@ class HunterTransactionEngine:
         key = str(uuid).strip().lower()
         value = bytes(payload)
         self._notifications[key] = value
+        sequence = self._notification_sequence.get(key, 0) + 1
+        self._notification_sequence[key] = sequence
         self._last_ack = value
         self._ack_event.set()
         event = self._notification_events.get(key)
+        received_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        if key == "0000ff82-0000-1000-8000-00805f9b34fb":
+            _LOGGER.info(
+                "Hunter FF82 notification cached at=%s sequence=%d payload_len=%d "
+                "payload=%s waiter_registered=%s",
+                received_at,
+                sequence,
+                len(value),
+                value.hex(" "),
+                event is not None,
+            )
         if event is not None:
             event.set()
 
@@ -172,6 +187,8 @@ class HunterTransactionEngine:
         event = self._notification_events.get(key)
         if event is not None:
             event.clear()
+        if key == "0000ff82-0000-1000-8000-00805f9b34fb":
+            _LOGGER.debug("Hunter FF82 notification cache cleared for new connection")
 
     async def wait_for_notification(
         self,
@@ -183,9 +200,23 @@ class HunterTransactionEngine:
         key = str(uuid).strip().lower()
         cached = self._notifications.get(key)
         if cached is not None:
+            if key == "0000ff82-0000-1000-8000-00805f9b34fb":
+                _LOGGER.info(
+                    "Hunter FF82 waiter consumed notification already cached "
+                    "before waiter registration: sequence=%d payload=%s",
+                    self._notification_sequence.get(key, 0),
+                    cached.hex(" "),
+                )
             return cached
 
         event = self._notification_events.setdefault(key, asyncio.Event())
+        if key == "0000ff82-0000-1000-8000-00805f9b34fb":
+            _LOGGER.info(
+                "Hunter FF82 waiter registered; waiting up to %.1f seconds "
+                "for notification sequence after=%d",
+                timeout,
+                self._notification_sequence.get(key, 0),
+            )
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
         except TimeoutError as err:
@@ -194,6 +225,12 @@ class HunterTransactionEngine:
             ) from err
 
         payload = self._notifications.get(key)
+        if key == "0000ff82-0000-1000-8000-00805f9b34fb" and payload is not None:
+            _LOGGER.info(
+                "Hunter FF82 waiter released by notification sequence=%d payload=%s",
+                self._notification_sequence.get(key, 0),
+                payload.hex(" "),
+            )
         if payload is None:
             raise TransactionError(
                 f"Notification event for {uuid} completed without a payload."
