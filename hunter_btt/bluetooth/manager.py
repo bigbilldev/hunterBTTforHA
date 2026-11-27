@@ -50,6 +50,7 @@ from .transaction import (
 
 _LOGGER = logging.getLogger(__name__)
 
+
 class HunterManagerError(Exception):
     """Raised for Hunter manager errors."""
 
@@ -251,13 +252,10 @@ class HunterBLEManager:
             self.transaction.clear_notification(NOTIFY_UUID)
             self.transaction.clear_notification(BATTERY_LEVEL_UUID)
             _LOGGER.info(
-                "Hunter Android initialization comparison: the reference flow "
-                "enables FF82/FF8A/FF8F notifications before connectTwoInit. "
-                "Observed connectTwoInit variants differ on an FF84 read "
-                "(one issues it and ignores the callback; another omits it); "
-                "both proceed with FF84 write, FF82/FF83 reads, status merge, "
-                "and FF83 write. The initialization path reads FF82 state "
-                "before reading and synchronizing FF83."
+                "Hunter Android 6.1.49 initialization: enable the nine captured "
+                "proprietary CCCDs, read the FFA5 client ID, write FF81, then "
+                "attempt FF84 clock sync and read/merge/write FF82/FF83 state. "
+                "FFA5 is a required FF81 input; no alternate UUID is assumed."
             )
             notification_uuids = (
                 SECOND_GEN_INIT_NOTIFICATION_UUIDS
@@ -361,12 +359,13 @@ class HunterBLEManager:
         _LOGGER.debug("Hunter FF84 clock synchronization written")
 
     async def _initialize_second_generation(self) -> None:
-        """Synchronize FF84 clock, then initialize FF83 from FF82 status.
+        """Read FFA5, build FF81, then initialize FF83 from FF82 status.
 
-        FF84 is synchronized best-effort without a prerequisite read.
-        Android then reads FF82 and FF83, merges the observed status into the
-        current FF83 configuration, and writes the resulting 12-byte state.
-        FF82 notifications remain subscribed and cached for live status events.
+        Android 6.1.49 reads the six-byte client ID from FFA5 immediately
+        before constructing and writing the dynamic FF81 payload. FF84 is
+        synchronized best-effort; Android then reads FF82 and FF83, merges
+        the observed status into the current FF83 configuration, and writes
+        the resulting 12-byte state. Missing FFA5 keeps valve control blocked.
         """
         self.protocol_initialized = False
         self.state["protocol_initialized"] = False
