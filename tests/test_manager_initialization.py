@@ -48,10 +48,10 @@ class FakeInitializationTransaction:
         self.reads.append(uuid)
         if uuid == TIME_UUID:
             raise AssertionError("FF84 must be synchronized by write, never read")
-        if uuid == CLIENT_ID_UUID:
-            return self.client_id
         if uuid in self.read_errors:
             raise self.read_errors[uuid]
+        if uuid == CLIENT_ID_UUID:
+            return self.client_id
         if uuid == NOTIFY_UUID:
             return self.ff82_payload
         if uuid == COMMAND_UUID:
@@ -69,6 +69,8 @@ class FakeGattClient:
     """Minimal GATT client used by the real transaction engine."""
 
     async def read(self, uuid):
+        if uuid == CLIENT_ID_UUID:
+            return FFA5_CLIENT_ID
         if uuid == NOTIFY_UUID:
             return FF82_CAPTURE
         if uuid == COMMAND_UUID:
@@ -268,7 +270,7 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(RuntimeError):
                 await manager._initialize_second_generation()
 
-        self.assertEqual(transaction.reads, [NOTIFY_UUID, COMMAND_UUID])
+        self.assertEqual(transaction.reads, [CLIENT_ID_UUID, NOTIFY_UUID, COMMAND_UUID])
         self.assertEqual([item[0] for item in transaction.writes], [PASSCODE_UUID, TIME_UUID])
         self.assertFalse(manager.protocol_initialized)
         self.assertFalse(manager.state["protocol_initialized"])
