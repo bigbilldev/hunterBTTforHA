@@ -24,7 +24,6 @@ from ..protocol.uuids import (
     PASSCODE_UUID,
     STATUS_NOTIFY_UUID,
     COMMAND_UUID,
-    SECOND_GEN_INIT_NOTIFICATION_UUIDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
