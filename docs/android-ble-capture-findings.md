@@ -133,9 +133,10 @@ protocol analysis.
 
 ## Validation status
 
-The new test locks down the exact captured 10-minute FF86 payload. This is a
-protocol-fixture regression test, not hardware validation. No watering command
-was sent by this change.
+The regression suite locks down the captured FF81 and FF86 payloads, verifies
+the FF81 encrypt/decrypt round trip, and checks that missing or invalid FFA5
+data leaves initialization incomplete. These are protocol-fixture tests, not
+hardware validation. No watering command was sent by this change.
 
 
 ## Additional notification CCCDs enabled before FF81
