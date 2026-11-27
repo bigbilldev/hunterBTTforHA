@@ -5,14 +5,14 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 import unittest
 
-from hunter_btt.bluetooth.manager import HunterBLEManager
+from hunter_btt.bluetooth.manager import HunterBLEManager, HunterManagerError
 from hunter_btt.bluetooth.transaction import (
     HunterTransactionEngine,
     TransactionReadNotPermitted,
     TransactionWriteNotPermitted,
 )
 from hunter_btt.models import HunterState
-from hunter_btt.protocol.generation import HunterGeneration
+from hunter_btt.protocol.generation import HunterCapabilities, HunterGeneration
 from hunter_btt.protocol.uuids import (
     CLIENT_ID_UUID,
     COMMAND_UUID,
@@ -90,12 +90,16 @@ class FakeConnection:
 
 
 class FakeCharacteristicConnection:
+    connected = True
+
     def __init__(self, client_id_readable=True):
         self.client_id_readable = client_id_readable
 
     def characteristic_properties(self, uuid):
         if uuid == CLIENT_ID_UUID and self.client_id_readable:
             return {"read", "notify"}
+        if uuid == COMMAND_UUID:
+            return {"read", "write"}
         return set()
 
 
@@ -214,6 +218,23 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(transaction.reads, [CLIENT_ID_UUID])
         self.assertEqual(transaction.writes, [])
+        self.assertFalse(manager.protocol_initialized)
+
+    async def test_start_and_stop_remain_blocked_until_protocol_initialized(self):
+        manager = self._manager(client_id_readable=False)
+        manager.connected = True
+        manager._generation = HunterGeneration.SECOND
+        manager._capabilities = HunterCapabilities(
+            generation=HunterGeneration.SECOND,
+            zone_count=2,
+        )
+
+        with self.assertRaisesRegex(HunterManagerError, "initialization has not completed"):
+            await manager.start_zone(1, 30)
+        with self.assertRaisesRegex(HunterManagerError, "initialization has not completed"):
+            await manager.stop()
+
+        self.assertEqual(manager.transaction.writes, [])
         self.assertFalse(manager.protocol_initialized)
 
     async def test_ff81_write_failure_stops_before_ff82_and_ff83(self):
