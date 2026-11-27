@@ -7,6 +7,7 @@ from bleak.exc import BleakError
 from hunter_btt.bluetooth.transaction import (
     HunterTransactionEngine,
     TransactionError,
+    TransactionWriteNotPermitted,
     build_start_arm_packet,
     build_stop_packet,
     build_zone_duration_packet,
@@ -14,6 +15,7 @@ from hunter_btt.bluetooth.transaction import (
 from hunter_btt.protocol.generation import HunterGeneration
 from hunter_btt.protocol.uuids import (
     COMMAND_UUID,
+    TIME_UUID,
     ZONE1_CONFIG_UUID,
     ZONE2_CONFIG_UUID,
 )
@@ -161,6 +163,23 @@ class TransactionSequenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.connection.client.writes), 1)
         self.assertEqual(self.connection.reconnect_calls, 0)
         self.assertEqual(self.connection.client.writes[0][2], True)
+
+
+    async def test_ff84_att_write_not_permitted_is_not_retried(self):
+        self.connection.client.write_error = BleakError(
+            "handle=27 error=3 description=Write not permitted"
+        )
+
+        with self.assertRaises(TransactionWriteNotPermitted):
+            await self.engine.write(
+                TIME_UUID,
+                bytes.fromhex("07 ea 08 03 0c 0f 22 01"),
+                response=True,
+            )
+
+        self.assertEqual(len(self.connection.client.writes), 1)
+        self.assertEqual(self.connection.reconnect_calls, 0)
+        self.assertEqual(self.connection.client.writes[0][0], TIME_UUID)
 
     async def test_other_bleak_errors_keep_retry_behavior(self):
         self.connection.client.write_error = BleakError("temporary transport failure")
