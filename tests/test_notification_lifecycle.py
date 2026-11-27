@@ -67,6 +67,22 @@ class NotificationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(fake_client.subscribed_characteristic, characteristic)
         self.assertIsNotNone(fake_client.callback)
 
+    async def test_ff82_callback_rejects_same_uuid_from_different_characteristic_object(self):
+        characteristic = FakeCharacteristic()
+        other_characteristic = FakeCharacteristic()
+        fake_client = FakeBleakClient(characteristic)
+        received = []
+        client = HunterBLEClient.__new__(HunterBLEClient)
+        client._client = fake_client
+        client._notification_callback = lambda uuid, payload: received.append(
+            (uuid.lower(), bytes(payload))
+        )
+
+        await client.start_notify(NOTIFY_UUID)
+        fake_client.callback(other_characteristic, b"not-from-subscribed-object")
+
+        self.assertEqual(received, [])
+
     async def test_ff82_callback_forwards_payload_from_expected_characteristic(self):
         characteristic = FakeCharacteristic()
         fake_client = FakeBleakClient(characteristic)
