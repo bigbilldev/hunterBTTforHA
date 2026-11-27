@@ -242,8 +242,9 @@ class HunterBLEManager:
             # Do not infer that FFA0/FFA1 are aliases for FF83. Keep the
             # native command UUID authoritative until packet-level evidence
             # establishes any transport-specific mapping.
-            # FF82 is notification-driven on this controller. Discard any
-            # payload retained from a previous connection before subscribing.
+            # Discard any FF82 payload retained from a previous connection.
+            # Keep the notification subscription active after initialization;
+            # notifications remain the live run/stop status channel.
             self.transaction.clear_notification(NOTIFY_UUID)
             self.transaction.clear_notification(BATTERY_LEVEL_UUID)
             _LOGGER.info(
@@ -252,9 +253,8 @@ class HunterBLEManager:
                 "Observed connectTwoInit variants differ on an FF84 read "
                 "(one issues it and ignores the callback; another omits it); "
                 "both proceed with FF84 write, FF82/FF83 reads, status merge, "
-                "and FF83 write. This controller's safe "
-                "path does not ATT-read FF82 and does not invent an additional "
-                "initialization write."
+                "and FF83 write. The initialization path reads FF82 state "
+                "before reading and synchronizing FF83."
             )
             subscription_status = await self.client.subscribe(
                 self._handle_notification
@@ -316,8 +316,8 @@ class HunterBLEManager:
         Some Bluetooth transports expose a different GATT table from the
         native controller. Never guess that another writable UUID is an FF83
         alias. Keep the BLE connection available for supported telemetry,
-        but leave valve control unavailable until the command characteristic
-        and its initialization notification are actually available.
+        but leave valve control unavailable until FF82 and FF83 have been read
+        and the merged FF83 initialization write has succeeded.
         """
         self.protocol_initialized = False
         self.state["protocol_initialized"] = False
@@ -358,9 +358,10 @@ class HunterBLEManager:
     async def _initialize_second_generation(self) -> None:
         """Synchronize FF84 clock, then initialize FF83 from FF82 status.
 
-        FF84 is write-only in this initialization flow: do not read it or make
-        a successful FF84 read a prerequisite for guarded FF83 control.
-        FF82 is notification-driven and must never be ATT-read.
+        FF84 is synchronized best-effort without a prerequisite read.
+        Android then reads FF82 and FF83, merges the observed status into the
+        current FF83 configuration, and writes the resulting 12-byte state.
+        FF82 notifications remain subscribed and cached for live status events.
         """
         self.protocol_initialized = False
         self.state["protocol_initialized"] = False
@@ -390,14 +391,9 @@ class HunterBLEManager:
 
             _LOGGER.info(
                 "Hunter initialization phase: FF84 clock attempt complete; "
-                "consuming FF82 notification cache/waiter before any FF83 read or write"
+                "reading FF82 state before FF83 read/merge/write"
             )
-            status = parse_ff82(
-                await self.transaction.wait_for_notification(
-                    NOTIFY_UUID,
-                    timeout=8.0,
-                )
-            )
+            status = parse_ff82(await self.transaction.read(NOTIFY_UUID))
             current_config = parse_ff83(
                 await self.transaction.read(COMMAND_UUID)
             )
@@ -418,7 +414,7 @@ class HunterBLEManager:
         _LOGGER.info(
             "Hunter second-generation initialization completed: "
             "FF84 clock synchronization attempted (best-effort), "
-            "FF82 status received, and FF83 state synchronized"
+            "FF82 state read, and FF83 state synchronized"
         )
 
     async def disconnect(self) -> None:

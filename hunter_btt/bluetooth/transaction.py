@@ -60,6 +60,10 @@ class TransactionWriteNotPermitted(TransactionError):
     """The controller explicitly rejected a GATT write with ATT 0x03."""
 
 
+class TransactionReadNotPermitted(TransactionError):
+    """The controller explicitly rejected a GATT read with ATT 0x02."""
+
+
 class TransactionTimeout(TransactionError):
     """A Hunter BLE transaction timed out."""
 
@@ -76,6 +80,24 @@ def _is_att_write_not_permitted(error: BaseException) -> bool:
         if (
             ("error=3" in message or "error = 3" in message or "0x03" in message)
             and ("att" in message or "write" in message)
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _is_att_read_not_permitted(error: BaseException) -> bool:
+    """Identify the controller's permanent ATT Read Not Permitted rejection."""
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        message = str(current).casefold()
+        if "read not permitted" in message:
+            return True
+        if (
+            ("error=2" in message or "error = 2" in message or "0x02" in message)
+            and ("att" in message or "read" in message)
         ):
             return True
         current = current.__cause__ or current.__context__
@@ -254,6 +276,17 @@ class HunterTransactionEngine:
             try:
                 return await operation()
             except BleakError as err:
+                if _is_att_read_not_permitted(err):
+                    _LOGGER.warning(
+                        "Hunter BLE read rejected by controller: uuid=%s "
+                        "ATT error=0x02 (Read Not Permitted); not retrying: %s",
+                        uuid,
+                        err,
+                    )
+                    raise TransactionReadNotPermitted(
+                        f"Controller rejected read from {uuid} "
+                        "(ATT 0x02 Read Not Permitted); retry suppressed."
+                    ) from err
                 last_error = err
                 if attempt < MAX_RETRIES:
                     await self._connection.reconnect()
