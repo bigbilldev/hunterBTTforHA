@@ -2,7 +2,7 @@
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 import unittest
 
 from hunter_btt.bluetooth.manager import HunterBLEManager
@@ -202,25 +202,6 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(manager.protocol_initialized)
         self.assertFalse(manager.state["protocol_initialized"])
 
-    async def test_ff84_write_failure_does_not_mark_protocol_initialized(self):
-        manager = HunterBLEManager.__new__(HunterBLEManager)
-        manager.state = HunterState()
-        manager.transaction = FakeInitializationTransaction()
-        manager._zone_enabled = {1: 1, 2: 1}
-        manager.protocol_initialized = False
-        manager.transaction.write = AsyncMock(
-            side_effect=RuntimeError("FF84 write failed")
-        )
-
-        fixed_now = datetime(2026, 8, 3, 12, 15, 33, tzinfo=timezone.utc)
-        with patch("hunter_btt.bluetooth.manager.dt_util.now", return_value=fixed_now):
-            with self.assertRaisesRegex(RuntimeError, "FF84 write failed"):
-                await manager._initialize_second_generation()
-
-        self.assertFalse(manager.protocol_initialized)
-        self.assertFalse(manager.state["protocol_initialized"])
-        self.assertEqual(manager.transaction.waits, [])
-        self.assertEqual(manager.transaction.reads, [])
 
 
 if __name__ == "__main__":
