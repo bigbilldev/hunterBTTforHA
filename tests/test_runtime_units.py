@@ -50,8 +50,17 @@ class RuntimeUnitTests(unittest.TestCase):
     def test_home_assistant_entities_advertise_minutes(self):
         self.assertEqual(SENSORS[1].native_unit_of_measurement, "min")
         self.assertEqual(SENSORS[2].native_unit_of_measurement, "min")
-        self.assertEqual(HunterRuntimeNumber.__dict__["_attr_native_unit_of_measurement"], "min")
-        self.assertEqual(HunterRuntimeNumber._attr_native_max_value, 60)
+
+        # Home Assistant wraps _attr_* class attributes in descriptors.
+        # Assert the public entity properties on a real entity instance.
+        coordinator = SimpleNamespace(
+            address="00:11:22:33:44:55",
+            name="Hunter BTT201",
+        )
+        entity = HunterRuntimeNumber(coordinator)
+
+        self.assertEqual(entity.native_unit_of_measurement, "min")
+        self.assertEqual(entity.native_max_value, 60)
 
 
 if __name__ == "__main__":
