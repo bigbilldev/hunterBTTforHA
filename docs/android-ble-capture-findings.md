@@ -24,7 +24,7 @@ not inferred from the Home Assistant connection.
 The Android 6.1.49 capture shows this order before manual watering:
 
 1. Enable the nine proprietary CCCDs in the order documented below.
-2. Read Device Information Model Number (2A26, value handle 0x000F); response:
+2. Read Device Information Firmware Revision String (2A26, value handle 0x000F); response:
    `Version 5.0.1.4 1C`.
 3. Read FFA5 (value handle 0x0064); response:
    `C8 7A 76 C4 AA 52`.
