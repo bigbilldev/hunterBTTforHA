@@ -74,7 +74,7 @@ class NotificationDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-        output = "\\n".join(logs.output)
+        output = "\n".join(logs.output)
         self.assertIn("notification subscription successful uuid=" + NOTIFY_UUID, output)
         self.assertIn("notification subscription successful uuid=" + COUNTDOWN_UUID, output)
         self.assertIn("notification subscription unavailable uuid=" + STATUS_NOTIFY_UUID, output)
