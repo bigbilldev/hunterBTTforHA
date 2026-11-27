@@ -406,8 +406,8 @@ class HunterBLEManager:
         self.state["protocol_initialized"] = True
         _LOGGER.info(
             "Hunter second-generation initialization completed: "
-            "FF84 clock synchronization written, FF82 status received, "
-            "and FF83 state synchronized"
+            "FF84 clock synchronization attempted (best-effort), "
+            "FF82 status received, and FF83 state synchronized"
         )
 
     async def disconnect(self) -> None:
