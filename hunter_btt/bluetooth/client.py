@@ -24,6 +24,7 @@ from ..protocol.uuids import (
     PASSCODE_UUID,
     STATUS_NOTIFY_UUID,
     COMMAND_UUID,
+    SECOND_GEN_INIT_NOTIFICATION_UUIDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -407,20 +408,34 @@ class HunterBLEClient:
         except Exception:
             _LOGGER.debug("Unable to unsubscribe %s", uuid, exc_info=True)
 
-    async def subscribe(self, callback=None) -> dict[str, str]:
-        """Attempt each known notification characteristic independently."""
+    async def subscribe(
+        self,
+        callback=None,
+        *,
+        notification_uuids: tuple[str, ...] | None = None,
+    ) -> dict[str, str]:
+        """Subscribe to notifications independently, preserving Android order.
+
+        Second-generation initialization supplies the nine captured CCCD
+        characteristics explicitly. Other callers retain the legacy core
+        notification set. Battery Level remains an optional extra subscription.
+        """
         if callback is not None:
             self._notification_callback = callback
         if not self.connected:
             await self.connect()
 
         self._notification_status = {}
-        for uuid in (
-            NOTIFY_UUID,
-            COUNTDOWN_UUID,
-            STATUS_NOTIFY_UUID,
-            BATTERY_LEVEL_UUID,
-        ):
+        if notification_uuids is None:
+            notification_uuids = (
+                NOTIFY_UUID,
+                COUNTDOWN_UUID,
+                STATUS_NOTIFY_UUID,
+            )
+        # The captured Android app enables the nine proprietary CCCDs before
+        # writing FF81. Keep Battery Level as a separate optional subscription.
+        subscription_order = (*notification_uuids, BATTERY_LEVEL_UUID)
+        for uuid in subscription_order:
             properties = self.characteristic_properties(uuid)
             if not properties:
                 self._notification_status[uuid] = "missing"
