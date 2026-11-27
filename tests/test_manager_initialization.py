@@ -204,6 +204,18 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transaction.writes, [])
         self.assertFalse(manager.protocol_initialized)
 
+    async def test_all_zero_ffa5_client_id_blocks_ff81(self):
+        transaction = FakeInitializationTransaction()
+        transaction.client_id = bytes(6)
+        manager = self._manager(transaction)
+
+        with self.assertRaisesRegex(ValueError, "non-zero six-byte client ID"):
+            await manager._initialize_second_generation()
+
+        self.assertEqual(transaction.reads, [CLIENT_ID_UUID])
+        self.assertEqual(transaction.writes, [])
+        self.assertFalse(manager.protocol_initialized)
+
     async def test_ff81_write_failure_stops_before_ff82_and_ff83(self):
         transaction = FakeInitializationTransaction()
         transaction.write_errors[PASSCODE_UUID] = RuntimeError("FF81 write failed")
