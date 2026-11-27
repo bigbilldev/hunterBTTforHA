@@ -30,8 +30,9 @@ class FakeBleakClient:
         self.is_connected = True
         self.callbacks = {}
 
-    async def start_notify(self, uuid, callback):
-        self.callbacks[uuid] = callback
+    async def start_notify(self, characteristic, callback):
+        # Bleak receives the discovered characteristic object, not a UUID.
+        self.callbacks[str(characteristic.uuid).strip().lower()] = callback
 
 
 class NotificationDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
@@ -78,9 +79,16 @@ class NotificationDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("notification subscription successful uuid=" + COUNTDOWN_UUID, output)
         self.assertIn("notification subscription unavailable uuid=" + STATUS_NOTIFY_UUID, output)
         self.assertIn("notification subscription successful uuid=" + BATTERY_LEVEL_UUID, output)
-        self.assertIn("notification received uuid=" + NOTIFY_UUID, output)
-        self.assertIn("notification received uuid=" + BATTERY_LEVEL_UUID, output)
+        # FF82 has a dedicated diagnostic that includes timestamp, payload,
+        # characteristic identity, and active connection identity.
+        self.assertIn("Hunter FF82 notification received", output)
+        self.assertIn("uuid=" + NOTIFY_UUID, output)
         self.assertIn("payload_len=3", output)
+        self.assertIn("payload=01 02 03", output)
+        # Other characteristics use the generic, DEBUG-level receive log.
+        self.assertIn("Hunter BLE notification received at=", output)
+        self.assertIn("uuid=" + BATTERY_LEVEL_UUID, output)
+        self.assertIn("payload_len=1", output)
 
 
 if __name__ == "__main__":

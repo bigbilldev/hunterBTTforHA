@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+from datetime import datetime, timezone
 
 from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
@@ -110,17 +111,22 @@ class HunterBLEClient:
             for characteristic in service.characteristics
         }
 
-    def characteristic_handle(self, uuid: str) -> int | None:
-        """Return the discovered ATT value handle for a characteristic UUID."""
+    def characteristic_object(self, uuid: str):
+        """Return the exact characteristic object from the active GATT database."""
         target = str(uuid).strip().lower()
         if self._client is None:
             return None
         for service in self._client.services:
             for characteristic in service.characteristics:
                 if str(characteristic.uuid).strip().lower() == target:
-                    handle = getattr(characteristic, "handle", None)
-                    return handle if isinstance(handle, int) else None
+                    return characteristic
         return None
+
+    def characteristic_handle(self, uuid: str) -> int | None:
+        """Return the discovered ATT value handle for a characteristic UUID."""
+        characteristic = self.characteristic_object(uuid)
+        handle = getattr(characteristic, "handle", None)
+        return handle if isinstance(handle, int) else None
 
     def characteristic_properties(self, uuid: str) -> set[str]:
         """Return properties reported by the connected GATT database."""
@@ -303,7 +309,16 @@ class HunterBLEClient:
         if not self.connected:
             await self.connect()
         assert self._client is not None
-        properties = self.characteristic_properties(uuid)
+        active_client = self._client
+        expected_characteristic = self.characteristic_object(uuid)
+        if expected_characteristic is None:
+            raise BleakError(
+                f"Characteristic {uuid} is absent from the active GATT database."
+            )
+        properties = {
+            str(prop).strip().lower()
+            for prop in expected_characteristic.properties
+        }
         if not ({"notify", "indicate"} & properties):
             raise BleakError(
                 f"Characteristic {uuid} does not support notifications or indications; "
@@ -312,22 +327,76 @@ class HunterBLEClient:
         if self._notification_callback is None:
             raise BleakError("No Hunter notification callback registered.")
 
+        expected_uuid = str(expected_characteristic.uuid).strip().lower()
+        expected_handle = getattr(expected_characteristic, "handle", None)
+        expected_id = id(expected_characteristic)
+        connection_id = id(active_client)
+
+        _LOGGER.info(
+            "Hunter notification handler attaching uuid=%s handle=%s "
+            "characteristic_id=%s connection_id=%s properties=%s",
+            expected_uuid,
+            expected_handle,
+            expected_id,
+            connection_id,
+            sorted(properties),
+        )
+
         def _callback(characteristic, data) -> None:
+            received_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
             payload = bytes(data)
-            _LOGGER.debug(
-                "Hunter BLE notification received uuid=%s handle=%s payload_len=%d",
-                str(characteristic.uuid).strip().lower(),
-                getattr(characteristic, "handle", None),
-                len(payload),
-            )
-            result = self._notification_callback(
-                str(characteristic.uuid),
-                payload,
-            )
+            received_uuid = str(characteristic.uuid).strip().lower()
+            same_connection = self._client is active_client
+            same_characteristic = characteristic is expected_characteristic
+
+            if received_uuid == "0000ff82-0000-1000-8000-00805f9b34fb":
+                _LOGGER.info(
+                    "Hunter FF82 notification received at=%s uuid=%s handle=%s "
+                    "payload_len=%d payload=%s callback_characteristic_id=%s "
+                    "subscribed_characteristic_id=%s same_characteristic=%s "
+                    "same_connection=%s connection_id=%s",
+                    received_at,
+                    received_uuid,
+                    getattr(characteristic, "handle", None),
+                    len(payload),
+                    payload.hex(" "),
+                    id(characteristic),
+                    expected_id,
+                    same_characteristic,
+                    same_connection,
+                    connection_id,
+                )
+            else:
+                _LOGGER.debug(
+                    "Hunter BLE notification received at=%s uuid=%s handle=%s "
+                    "payload_len=%d connection_id=%s",
+                    received_at,
+                    received_uuid,
+                    getattr(characteristic, "handle", None),
+                    len(payload),
+                    connection_id,
+                )
+
+            if not same_connection or not same_characteristic:
+                _LOGGER.error(
+                    "Ignoring notification from unexpected GATT object: uuid=%s "
+                    "same_characteristic=%s same_connection=%s expected_handle=%s "
+                    "received_handle=%s",
+                    received_uuid,
+                    same_characteristic,
+                    same_connection,
+                    expected_handle,
+                    getattr(characteristic, "handle", None),
+                )
+                return
+
+            result = self._notification_callback(received_uuid, payload)
             if inspect.isawaitable(result):
                 asyncio.create_task(result)
 
-        await self._client.start_notify(uuid, _callback)
+        # Pass Bleak the exact object obtained from this connection's discovered
+        # service database, not a UUID string that could be resolved separately.
+        await active_client.start_notify(expected_characteristic, _callback)
 
     async def stop_notify(self, uuid: str) -> None:
         if not self.connected:

@@ -246,6 +246,16 @@ class HunterBLEManager:
             # payload retained from a previous connection before subscribing.
             self.transaction.clear_notification(NOTIFY_UUID)
             self.transaction.clear_notification(BATTERY_LEVEL_UUID)
+            _LOGGER.info(
+                "Hunter Android initialization comparison: the reference flow "
+                "enables FF82/FF8A/FF8F notifications before connectTwoInit. "
+                "Observed connectTwoInit variants differ on an FF84 read "
+                "(one issues it and ignores the callback; another omits it); "
+                "both proceed with FF84 write, FF82/FF83 reads, status merge, "
+                "and FF83 write. This controller's safe "
+                "path does not ATT-read FF82 and does not invent an additional "
+                "initialization write."
+            )
             subscription_status = await self.client.subscribe(
                 self._handle_notification
             )
@@ -378,8 +388,9 @@ class HunterBLEManager:
                     err,
                 )
 
-            _LOGGER.debug(
-                "Hunter FF84 clock synchronization attempt complete; waiting for FF82"
+            _LOGGER.info(
+                "Hunter initialization phase: FF84 clock attempt complete; "
+                "consuming FF82 notification cache/waiter before any FF83 read or write"
             )
             status = parse_ff82(
                 await self.transaction.wait_for_notification(
