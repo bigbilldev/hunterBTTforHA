@@ -96,3 +96,47 @@ protocol analysis.
 The new test locks down the exact captured 10-minute FF86 payload. This is a
 protocol-fixture regression test, not hardware validation. No watering command
 was sent by this change.
+
+
+## Additional notification CCCDs enabled before FF81
+
+The ATT discovery responses and CCCD Write Requests in the same Android
+6.1.49 capture identify six additional notification characteristics. The
+CCCD descriptor handles receive `01 00` writes before FF81. The six additional
+CCCD writes are packets 420, 423, 427, 433, 439, and 445; the three previously
+mapped core CCCD writes are packets 430 (FF8F), 436 (FF8A), and 442 (FF82):
+
+| CCCD handle | Characteristic value handle | Characteristic UUID | Captured Android-side role |
+|---:|---:|---|---|
+| `0x0048` | `0x0047` | `0000ff99-0000-1000-8000-00805f9b34fb` | Zone 1 image-transfer chunks |
+| `0x004D` | `0x004C` | `0000ff9b-0000-1000-8000-00805f9b34fb` | Zone 2 image-transfer chunks |
+| `0x0054` | `0x0053` | `0000ffa2-0000-1000-8000-00805f9b34fb` | Irrigation-log total-record count |
+| `0x0057` | `0x0056` | `0000ff9e-0000-1000-8000-00805f9b34fb` | Irrigation-log records (two-zone record payload) |
+| `0x005A` | `0x0059` | `0000ffa3-0000-1000-8000-00805f9b34fb` | Irrigation-log record payload |
+| `0x0065` | `0x0064` | `0000ffa5-0000-1000-8000-00805f9b34fb` | Unknown; no matching application protocol handler identified |
+
+All six characteristic declarations advertise read + notify properties in
+this capture. The descriptor-to-characteristic association is established by
+the ATT characteristic declaration/value handles and the following CCCD
+descriptor handles, not by guessing from UUID names.
+
+The inspected decompiled Android 6.1.7 source (older than the user's
+confirmed 6.1.49 capture) maps FF99 and FF9B to zone image receivers. This
+source is semantic corroboration, not the exact app build used for the
+capture. FF9E, FFA2, and FFA3 participate in the irrigation-log receiver:
+FFA2 supplies the total record count and FF9E/FFA3 carry decoded zone,
+timestamp, infiltration-time, and run-time fields. In the capture, FFA3
+notifications occur after watering countdown activity, not in the startup
+exchange. FFA5 has no identified handler in the inspected source and no
+matching notification payload in this capture.
+
+These channels therefore appear to support optional image/history features,
+not the controller's FF81/FF84/FF82/FF83 initialization handshake. The
+capture proves Android subscribes to all six before FF81; it does not prove
+that any of the six is required for initialization. HA now enables them in
+the same nine-CCCD order observed in the capture before sending FF81. They
+are treated as optional notification subscriptions: an individual
+subscription failure is logged and does not abort the remaining
+subscriptions or alter the existing FF81/FF84/FF82/FF83 readiness guard.
+Battery Level remains a separate optional subscription after the captured
+nine CCCDs.

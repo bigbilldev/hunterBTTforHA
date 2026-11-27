@@ -26,6 +26,7 @@ from ..protocol.uuids import (
     PASSCODE_UUID,
     STATUS_NOTIFY_UUID,
     TIME_UUID,
+    SECOND_GEN_INIT_NOTIFICATION_UUIDS,
 )
 from ..protocol.generation import (
     FCC0_SERVICE_UUID,
@@ -261,16 +262,18 @@ class HunterBLEManager:
                 "and FF83 write. The initialization path reads FF82 state "
                 "before reading and synchronizing FF83."
             )
+            notification_uuids = (
+                SECOND_GEN_INIT_NOTIFICATION_UUIDS
+                if self._generation is HunterGeneration.SECOND
+                else None
+            )
             subscription_status = await self.client.subscribe(
-                self._handle_notification
+                self._handle_notification,
+                notification_uuids=notification_uuids,
             )
             _LOGGER.info(
-                "Hunter notification subscription results: FF82=%s FF8A=%s "
-                "FF8F=%s battery_2A19=%s",
-                subscription_status.get(NOTIFY_UUID, "not reported"),
-                subscription_status.get(COUNTDOWN_UUID, "not reported"),
-                subscription_status.get(STATUS_NOTIFY_UUID, "not reported"),
-                subscription_status.get(BATTERY_LEVEL_UUID, "not reported"),
+                "Hunter notification subscription results: %s",
+                subscription_status,
             )
 
             if self._generation is HunterGeneration.SECOND:
