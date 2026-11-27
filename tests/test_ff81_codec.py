@@ -21,6 +21,10 @@ CAPTURED_PAYLOAD = bytes.fromhex(
 class FF81CodecTests(unittest.TestCase):
     def test_android_6149_capture_vector_matches_byte_for_byte(self):
         self.assertEqual(
+            encrypt_stream(CAPTURED_PLAINTEXT, CAPTURED_KEY),
+            CAPTURED_CIPHERTEXT,
+        )
+        self.assertEqual(
             build_ff81_payload(
                 "0000",
                 CAPTURED_CLIENT_ID,
