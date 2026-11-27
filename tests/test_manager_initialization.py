@@ -2,7 +2,7 @@
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 import unittest
 
 from hunter_btt.bluetooth.manager import HunterBLEManager
@@ -107,7 +107,7 @@ class InitializationRegressionTests(unittest.IsolatedAsyncioTestCase):
         manager.transaction = FakeInitializationTransaction()
         manager._zone_enabled = {1: 1, 2: 1}
         manager.protocol_initialized = False
-        manager.transaction.write = unittest.mock.AsyncMock(
+        manager.transaction.write = AsyncMock(
             side_effect=RuntimeError("FF84 write failed")
         )
 
