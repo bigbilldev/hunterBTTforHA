@@ -9,10 +9,12 @@ Bleak characteristic with:
   handle `0x0065`.
 
 The recovered object is held in `HunterBLEClient._recovered_characteristics`
-and returned by `characteristic_object()`. It is not inserted into the
-ESPHome client's original service collection. Instead, the exact reconstructed
-characteristic object is passed to `BleakClient.start_notify()`; its attached
-descriptor is therefore available to the backend.
+and returned by `characteristic_object()`. The original Bleak service
+collection remains unchanged: its handle `0x0064` and CCCD `0x0065` remain
+represented as descriptors under the preceding FFA1 characteristic. The
+recovery code passes the exact reconstructed FFA5 characteristic object to
+`BleakClient.start_notify()`, with a new Bleak descriptor object for CCCD
+`0x0065` attached to it.
 
 ## ESPHome backend behavior
 
@@ -28,9 +30,32 @@ write.
 This order is diagnostically important: an error reported against
 characteristic handle `0x0064` is from the initial proxy
 `bluetooth_gatt_start_notify` operation; an error from the explicit CCCD
-write should identify descriptor handle `0x0065`. The new log records the
-backend class, backend feature flags, characteristic handle, and attached
-CCCD handle immediately before subscription and on failure.
+write should identify descriptor handle `0x0065`.
+
+Inspection of the pinned backend implementation shows that
+`ESPHomeClient.start_notify()` does not look the characteristic up in
+`self.services`. It consumes the supplied characteristic object's handle
+directly for proxy registration, then uses that same object's descriptor list
+for the CCCD write. Thus the absence of FFA5 from the host-side service
+collection is not, by itself, a reason for the backend to reject the object.
+
+Bleak's service collection exposes add operations but no public remove or
+re-parent operation. In this capture, the original descriptor entries at
+handles `0x0064` and `0x0065` are already attached to FFA1. Adding a second
+characteristic without moving those entries would leave duplicate/conflicting
+attribute ownership; mutating Bleak's private collections would be brittle.
+The integration therefore does not rewrite the backend's native collection.
+The regression test now models a real `BleakGATTServiceCollection`, proves
+that FFA5 remains absent there, and verifies that the exact recovered object
+(with its own CCCD descriptor) is passed to the backend.
+
+The ESPHome backend's host-side collection is also distinct from the proxy
+firmware's native GATT client table. Reconstructing a Bleak object cannot add
+a characteristic to the ESP32's internal GATT cache. The new diagnostics log
+the owner of backend descriptor handles `0x0064` and `0x0065`, whether an
+actual FFA5 characteristic exists at handle `0x0064`, and the total
+characteristic count. This should show whether the host view has FFA5
+misgrouped under FFA1 before the request reaches the proxy.
 
 ## Initialization remains independent
 
@@ -88,13 +113,13 @@ validation may be skipped if the cache is not yet ready. See the
 [ESP-IDF GATT client registration documentation](https://docs.espressif.com/projects/esp-idf/en/latest/esp32h21/api-reference/bluetooth/esp_gattc.html).
 
 This makes a proxy-side GATT service/handle-cache mismatch a plausible
-investigation target, not a confirmed root cause. The new diagnostics record
-whether the recovered FFA5 handle/UUID also appears in the Bleak service
-collection returned by the proxy, the total characteristic count, the proxy
-ESPHome version, the backend feature flags, and the recovered service/CCCD
-handles. The FFA5 subscription remains best-effort; successful FFA5 reads,
-FF81 initialization, FF82/FF8A subscriptions, and watering commands are not
-changed.
+investigation target, not a confirmed root cause. The diagnostics record whether the recovered FFA5 handle/UUID appears as a
+characteristic in the Bleak service collection, the number of native-view
+characteristics, and which characteristic owns descriptor handles 0x0064 and
+0x0065. They also retain the proxy ESPHome version, backend feature flags,
+and recovered service/CCCD handles. The FFA5 subscription remains best-effort;
+successful FFA5 reads, FF81 initialization, FF82/FF8A subscriptions, and
+watering commands are not changed.
 
 ### Next evidence needed
 
