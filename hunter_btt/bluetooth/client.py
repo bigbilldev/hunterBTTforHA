@@ -279,6 +279,7 @@ class HunterBLEClient:
         finally:
             self._client = None
             self._notification_status = {}
+            self._recovered_characteristics = {}
 
         # Re-resolve via Home Assistant so the ESPHome proxy's current BLE
         # device path is used, rather than carrying a potentially stale object.
