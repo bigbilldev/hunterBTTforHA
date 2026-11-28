@@ -249,8 +249,11 @@ class HunterBLEManager:
             # Discard any FF82 payload retained from a previous connection.
             # Keep the notification subscription active after initialization;
             # notifications remain the live run/stop status channel.
-            self.transaction.clear_notification(NOTIFY_UUID)
-            self.transaction.clear_notification(BATTERY_LEVEL_UUID)
+            for notification_uuid in (
+                *SECOND_GEN_INIT_NOTIFICATION_UUIDS,
+                BATTERY_LEVEL_UUID,
+            ):
+                self.transaction.clear_notification(notification_uuid)
             _LOGGER.info(
                 "Hunter Android 6.1.49 initialization: enable the nine captured "
                 "proprietary CCCDs, read the FFA5 client ID, write FF81, then "
