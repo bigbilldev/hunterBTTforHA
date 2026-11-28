@@ -6,10 +6,11 @@ from uuid import UUID
 
 from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.descriptor import BleakGATTDescriptor
-from bleak.backends.service import BleakGATTService
+from bleak.backends.service import BleakGATTService, BleakGATTServiceCollection
 
 from hunter_btt.bluetooth.client import HunterBLEClient
 from hunter_btt.bluetooth.gatt_attributes import (
+    find_misclassified_characteristic,
     normalize_uuid,
     parse_characteristic_declaration,
 )
@@ -45,8 +46,6 @@ class MisgroupedGattClient:
             max_write_without_response_size=20,
             service=self.service,
         )
-        self.service.add_characteristic(self.parent)
-
         self.declaration = BleakGATTDescriptor(
             obj=None, handle=0x0063,
             uuid="00002803-0000-1000-8000-00805f9b34fb",
@@ -61,12 +60,13 @@ class MisgroupedGattClient:
             uuid="00002902-0000-1000-8000-00805f9b34fb",
             characteristic=self.parent,
         )
+        self.services = BleakGATTServiceCollection()
+        self.services.add_service(self.service)
+        self.services.add_characteristic(self.parent)
         for descriptor in (self.declaration, self.value_attribute):
-            self.parent.add_descriptor(descriptor)
+            self.services.add_descriptor(descriptor)
         if include_cccd:
-            self.parent.add_descriptor(self.cccd)
-
-        self.services = [self.service]
+            self.services.add_descriptor(self.cccd)
         self.read_gatt_char = AsyncMock(
             side_effect=[_descriptor_declaration(), CLIENT_ID]
         )
@@ -136,9 +136,17 @@ class GattAttributeRecoveryTests(unittest.IsolatedAsyncioTestCase):
         recovered = await client._recover_misclassified_characteristic(CLIENT_ID_UUID)
 
         self.assertTrue(recovered)
+        self.assertIsNone(backend.services.get_characteristic(CLIENT_ID_UUID))
+        self.assertIs(backend.services.get_descriptor(0x0064), backend.value_attribute)
+        self.assertIs(backend.services.get_descriptor(0x0065), backend.cccd)
         characteristic = client.characteristic_object(CLIENT_ID_UUID)
         self.assertIsNotNone(characteristic)
         self.assertEqual(characteristic.handle, 0x0064)
+        candidate = find_misclassified_characteristic(
+            backend.services, CLIENT_ID_UUID
+        )
+        self.assertIsNotNone(candidate)
+        self.assertIs(candidate.parent_characteristic, backend.parent)
         self.assertEqual(characteristic.uuid, normalize_uuid(CLIENT_ID_UUID))
         self.assertEqual(set(characteristic.properties), {"read", "notify"})
         self.assertEqual(
@@ -230,6 +238,13 @@ class GattAttributeRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         recovered = client.characteristic_object(CLIENT_ID_UUID)
         self.assertIs(backend.start_notify.await_args.args[0], recovered)
+        # The backend service collection still exposes handle 0x0064 as a
+        # descriptor under FFA1. ESPHomeClient.start_notify accepts the exact
+        # characteristic object and forwards its handle directly, so mutating
+        # Bleak's service collection is not required for this call path.
+        self.assertIsNone(backend.services.get_characteristic(CLIENT_ID_UUID))
+        self.assertIs(backend.services.get_descriptor(0x0064), backend.value_attribute)
+        self.assertIs(backend.services.get_descriptor(0x0065), backend.cccd)
         # ESPHome's REMOTE_CACHING path reads the CCCD from the exact
         # characteristic object passed to start_notify, then writes its handle.
         cccd = recovered.get_descriptor(0x0065)

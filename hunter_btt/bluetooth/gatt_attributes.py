@@ -36,6 +36,7 @@ class MisclassifiedCharacteristic:
     service: Any
     declaration: Any
     value_attribute: Any
+    parent_characteristic: Any
     cccd: Any | None
 
 
@@ -103,6 +104,7 @@ def find_misclassified_characteristic(
                 service=service,
                 declaration=attribute,
                 value_attribute=value_attribute,
+                parent_characteristic=_parent,
                 cccd=cccd,
             )
     return None
