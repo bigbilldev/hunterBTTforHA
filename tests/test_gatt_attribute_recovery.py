@@ -46,8 +46,6 @@ class MisgroupedGattClient:
             max_write_without_response_size=20,
             service=self.service,
         )
-        self.service.add_characteristic(self.parent)
-
         self.declaration = BleakGATTDescriptor(
             obj=None, handle=0x0063,
             uuid="00002803-0000-1000-8000-00805f9b34fb",
