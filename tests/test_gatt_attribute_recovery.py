@@ -51,10 +51,9 @@ class MisgroupedGattClient:
             self.parent.add_descriptor(descriptor)
 
         self.services = [self.service]
-        self.read_gatt_descriptor = AsyncMock(
-            return_value=_descriptor_declaration()
+        self.read_gatt_char = AsyncMock(
+            side_effect=[_descriptor_declaration(), CLIENT_ID]
         )
-        self.read_gatt_char = AsyncMock(return_value=CLIENT_ID)
         self.start_notify = AsyncMock()
         self.stop_notify = AsyncMock()
 
@@ -79,14 +78,24 @@ class GattAttributeRecoveryTests(unittest.IsolatedAsyncioTestCase):
         value = await client.read(CLIENT_ID_UUID)
 
         self.assertEqual(value, CLIENT_ID)
-        backend.read_gatt_descriptor.assert_awaited_once_with(backend.declaration)
-        backend.read_gatt_char.assert_awaited_once_with(characteristic)
+        self.assertEqual(backend.read_gatt_char.await_count, 2)
+        declaration_probe = backend.read_gatt_char.await_args_list[0].args[0]
+        self.assertEqual(declaration_probe.handle, 0x0063)
+        self.assertEqual(
+            declaration_probe.uuid,
+            "00002803-0000-1000-8000-00805f9b34fb",
+        )
+        self.assertEqual(declaration_probe.properties, ["read"])
+        self.assertIs(
+            backend.read_gatt_char.await_args_list[1].args[0],
+            characteristic,
+        )
         self.assertEqual(len(value), 6)
         self.assertTrue(any(value))
 
     async def test_rejects_declaration_that_does_not_identify_ffa5(self):
         backend = MisgroupedGattClient()
-        backend.read_gatt_descriptor = AsyncMock(
+        backend.read_gatt_char = AsyncMock(
             return_value=_descriptor_declaration(
                 uuid="0000ffa4-0000-1000-8000-00805f9b34fb"
             )
@@ -98,11 +107,11 @@ class GattAttributeRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await client._recover_misclassified_characteristic(CLIENT_ID_UUID)
         )
         self.assertIsNone(client.characteristic_object(CLIENT_ID_UUID))
-        backend.read_gatt_char.assert_not_awaited()
+        self.assertEqual(backend.read_gatt_char.await_count, 1)
 
     async def test_rejects_declaration_without_read_property(self):
         backend = MisgroupedGattClient()
-        backend.read_gatt_descriptor = AsyncMock(
+        backend.read_gatt_char = AsyncMock(
             return_value=_descriptor_declaration(properties=0x10)
         )
         client = HunterBLEClient(None, "AA:BB:CC:DD:EE:FF")
@@ -118,6 +127,9 @@ class GattAttributeRecoveryTests(unittest.IsolatedAsyncioTestCase):
         backend = MisgroupedGattClient()
         client = HunterBLEClient(None, "AA:BB:CC:DD:EE:FF")
         client._client = backend
+        backend.read_gatt_char = AsyncMock(
+            return_value=_descriptor_declaration()
+        )
         await client._recover_misclassified_characteristic(CLIENT_ID_UUID)
         client.register_notification_callback(lambda _uuid, _payload: None)
 
