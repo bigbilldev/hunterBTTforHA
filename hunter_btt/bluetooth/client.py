@@ -325,8 +325,20 @@ class HunterBLEClient:
             return False
 
         try:
+            # 0x2803 is a GATT characteristic declaration attribute, not a
+            # descriptor. Use the backend's characteristic-read operation
+            # with a temporary Bleak object carrying the discovered handle;
+            # the ESPHome backend forwards that handle as a raw GATT read.
+            declaration_probe = BleakGATTCharacteristic(
+                obj=getattr(candidate.declaration, "obj", None),
+                handle=candidate.declaration.handle,
+                uuid=str(candidate.declaration.uuid),
+                properties=["read"],
+                max_write_without_response_size=20,
+                service=candidate.service,
+            )
             declaration_bytes = bytes(
-                await self._client.read_gatt_descriptor(candidate.declaration)
+                await self._client.read_gatt_char(declaration_probe)
             )
             parsed = parse_characteristic_declaration(declaration_bytes, target)
             if parsed.value_handle != candidate.value_attribute.handle:
