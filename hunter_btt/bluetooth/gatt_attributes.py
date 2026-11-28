@@ -15,6 +15,7 @@ from uuid import UUID
 
 CHARACTERISTIC_DECLARATION_UUID = "00002803-0000-1000-8000-00805f9b34fb"
 CLIENT_CONFIGURATION_UUID = "00002902-0000-1000-8000-00805f9b34fb"
+BLUETOOTH_BASE_UUID = "00000000-0000-1000-8000-00805f9b34fb"
 
 _PROPERTY_BITS = (
     (0x01, "broadcast"),
@@ -47,12 +48,25 @@ class ParsedCharacteristicDeclaration:
     uuid: str
 
 
+def normalize_uuid(value: str | UUID) -> str:
+    """Normalize Bluetooth 16/32-bit aliases and canonical UUID strings."""
+    if isinstance(value, UUID):
+        return str(value)
+    text = str(value).strip().lower()
+    compact = text.replace("-", "")
+    if len(compact) == 4 and all(char in "0123456789abcdef" for char in compact):
+        return str(UUID(f"0000{compact}-0000-1000-8000-00805f9b34fb"))
+    if len(compact) == 8 and all(char in "0123456789abcdef" for char in compact):
+        return str(UUID(f"{compact[:8]}-0000-1000-8000-00805f9b34fb"))
+    return str(UUID(text))
+
+
 def find_misclassified_characteristic(
     services: Any,
     target_uuid: str,
 ) -> MisclassifiedCharacteristic | None:
     """Find 0x2803 followed by the requested characteristic value attribute."""
-    target = str(target_uuid).strip().lower()
+    target = normalize_uuid(target_uuid)
     for service in services:
         attributes = []
         for characteristic in service.characteristics:
@@ -64,14 +78,14 @@ def find_misclassified_characteristic(
         attributes.sort(key=lambda item: item[0].handle)
 
         for index, (attribute, _parent) in enumerate(attributes):
-            if str(attribute.uuid).strip().lower() != CHARACTERISTIC_DECLARATION_UUID:
+            if normalize_uuid(str(attribute.uuid)) != CHARACTERISTIC_DECLARATION_UUID:
                 continue
             if index + 1 >= len(attributes):
                 continue
             value_attribute, _value_parent = attributes[index + 1]
             if (
                 value_attribute.handle != attribute.handle + 1
-                or str(value_attribute.uuid).strip().lower() != target
+                or normalize_uuid(str(value_attribute.uuid)) != target
             ):
                 continue
 
@@ -80,7 +94,7 @@ def find_misclassified_characteristic(
                 possible_cccd, _cccd_parent = attributes[index + 2]
                 if (
                     possible_cccd.handle == value_attribute.handle + 1
-                    and str(possible_cccd.uuid).strip().lower()
+                    and normalize_uuid(str(possible_cccd.uuid))
                     == CLIENT_CONFIGURATION_UUID
                 ):
                     cccd = possible_cccd
@@ -98,28 +112,36 @@ def parse_characteristic_declaration(
     payload: bytes,
     expected_uuid: str,
 ) -> ParsedCharacteristicDeclaration:
-    """Decode a 128-bit UUID GATT characteristic declaration value.
+    """Decode a 0x2803 value containing a 16- or 128-bit characteristic UUID.
 
-    The ATT declaration value is: properties (1), value handle (2 LE), UUID
-    (16 bytes in Bluetooth little-endian UUID order).
+    ATT declaration layout is properties (1), value handle (2 little-endian),
+    then either a 16-bit UUID (2 little-endian) or 128-bit UUID (16 bytes in
+    Bluetooth little-endian UUID order).
     """
     raw = bytes(payload)
-    if len(raw) != 19:
+    if len(raw) == 5:
+        short_uuid = int.from_bytes(raw[3:5], "little")
+        characteristic_uuid = normalize_uuid(f"{short_uuid:04x}")
+    elif len(raw) == 19:
+        characteristic_uuid = str(UUID(bytes_le=raw[3:19]))
+    else:
         raise ValueError(
-            f"128-bit characteristic declaration must be 19 bytes; got {len(raw)}"
+            "characteristic declaration must be 5 bytes (16-bit UUID) or "
+            f"19 bytes (128-bit UUID); got {len(raw)}"
         )
 
     properties_byte = raw[0]
     value_handle = int.from_bytes(raw[1:3], "little")
-    characteristic_uuid = str(UUID(bytes_le=raw[3:19]))
-    expected = str(expected_uuid).strip().lower()
+    expected = normalize_uuid(expected_uuid)
 
-    if characteristic_uuid.lower() != expected:
+    if characteristic_uuid != expected:
         raise ValueError(
             f"declaration UUID {characteristic_uuid} does not match {expected}"
         )
     if value_handle <= 0:
         raise ValueError(f"invalid characteristic value handle {value_handle}")
+    if properties_byte == 0:
+        raise ValueError("characteristic declaration has no properties")
 
     properties = tuple(
         name for bit, name in _PROPERTY_BITS if properties_byte & bit
