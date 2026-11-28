@@ -263,8 +263,7 @@ The integration now has a narrowly scoped diagnostic recovery path:
 
 Source inspection of the current bleak-esphome 4.1.0 backend shows that it supports this handle-based route:
 - Its service builder converts each descriptor reported by the ESPHome API into a Bleak descriptor attached to the reported parent characteristic.
-- read_gatt_char forwards the supplied characteristic object's handle to the ESPHome API characteristic-read operation, which is also the correct raw-handle route for reading the 0x2803 declaration.
-- read_gatt_char forwards the supplied characteristic object's handle to the ESPHome API characteristic-read operation.
+- read_gatt_char forwards the supplied characteristic object's handle to the ESPHome API characteristic-read operation, which is also the raw-handle route used to read the 0x2803 declaration.
 - start_notify forwards the characteristic handle; when REMOTE_CACHING is enabled it also requires a CCCD attached to that characteristic and writes the CCCD handle.
 
 Bleak's public client API accepts a Bleak characteristic object directly, bypassing its malformed collection lookup. The recovery path therefore creates an official Bleak characteristic with the declaration-derived UUID/properties/value handle and attaches the discovered CCCD. That is supported by the inspected backend contract; it avoids requiring a proxy firmware change merely to address FFA5. The remaining uncertainty is runtime: the deployed HA/bleak-esphome version and ESPHome proxy must successfully read declaration handle 0x0063 through the characteristic-read operation, then characteristic value handle 0x0064, and subscribe through CCCD 0x0065. If those handle operations fail in the actual session, the fix belongs in the deployed ESPHome/bleak-esphome stack rather than Hunter UUID mapping.
