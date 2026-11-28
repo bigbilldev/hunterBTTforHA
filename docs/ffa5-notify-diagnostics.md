@@ -51,11 +51,43 @@ that FFA5 remains absent there, and verifies that the exact recovered object
 
 The ESPHome backend's host-side collection is also distinct from the proxy
 firmware's native GATT client table. Reconstructing a Bleak object cannot add
-a characteristic to the ESP32's internal GATT cache. The new diagnostics log
-the owner of backend descriptor handles `0x0064` and `0x0065`, whether an
-actual FFA5 characteristic exists at handle `0x0064`, and the total
-characteristic count. This should show whether the host view has FFA5
-misgrouped under FFA1 before the request reaches the proxy.
+a characteristic to the ESP32's internal GATT cache.
+
+In ESPHome 2026.11.0, the ESP32 Bluedroid service streamer counts entries of
+type `ESP_GATT_DB_CHARACTERISTIC` and enumerates them with
+`esp_ble_gattc_get_all_char()`. It then enumerates descriptors separately
+with `ESP_GATT_DB_DESCRIPTOR` and `esp_ble_gattc_get_all_descr()`, grouped
+under each characteristic. The 45-characteristic host view is therefore
+built from the proxy's ESP-IDF GATT database; it is not an independent
+re-interpretation of Android's database. When the declaration at `0x0063`,
+FFA5 value at `0x0064`, and CCCD at `0x0065` appear as descriptors under
+FFA1, the proxy's ESP-IDF database is classifying those handles as descriptors
+rather than exposing FFA5 as a characteristic. See the
+[ESPHome 2026.11.0 Bluedroid service streamer](https://github.com/esphome/esphome/blob/2026.11.0/esphome/components/bluetooth_connection/bluetooth_connection_bluedroid.cpp).
+
+The same ESPHome version implements Bluedroid notification registration by
+calling `esp_ble_gattc_register_for_notify()` with the requested value
+handle. It does not perform a UUID lookup in the host-side Bleak collection.
+Thus error 135 on handle `0x0064` is consistent with the proxy's ESP-IDF
+stack rejecting a handle that its GATT database does not expose as a
+characteristic. The root cause of the ESP-IDF database classification is not
+proven by the host log alone.
+
+ESPHome 2026.11.0 also supports address-scoped GATT cache clearing:
+`bluetooth_device_clear_cache` calls `esp_ble_gattc_cache_clean(address)`.
+The integration currently uses its cache-refresh/reconnect path only when
+declaration recovery fails completely. Since FFA5 recovery currently succeeds,
+that path is not exercised. The next useful hardware experiment is a single
+on-proxy GATT cache clear followed by reconnect and a comparison of the
+native characteristic/descriptor inventory. This PR does not trigger that
+clear automatically, to avoid adding a reconnect to an otherwise successful
+initialization path. See the
+[ESPHome cache-clear implementation](https://github.com/esphome/esphome/blob/2026.11.0/esphome/components/bluetooth_connection/bluetooth_connection.cpp).
+
+The new diagnostics log the UUID and parent owner for native descriptor
+handles `0x0064` and `0x0065`, whether an actual FFA5 characteristic exists
+at handle `0x0064`, and the total characteristic count. This should make the
+proxy's native classification explicit on the next physical connection.
 
 ## Initialization remains independent
 
@@ -113,13 +145,14 @@ validation may be skipped if the cache is not yet ready. See the
 [ESP-IDF GATT client registration documentation](https://docs.espressif.com/projects/esp-idf/en/latest/esp32h21/api-reference/bluetooth/esp_gattc.html).
 
 This makes a proxy-side GATT service/handle-cache mismatch a plausible
-investigation target, not a confirmed root cause. The diagnostics record whether the recovered FFA5 handle/UUID appears as a
-characteristic in the Bleak service collection, the number of native-view
-characteristics, and which characteristic owns descriptor handles 0x0064 and
-0x0065. They also retain the proxy ESPHome version, backend feature flags,
-and recovered service/CCCD handles. The FFA5 subscription remains best-effort;
-successful FFA5 reads, FF81 initialization, FF82/FF8A subscriptions, and
-watering commands are not changed.
+investigation target, not a confirmed root cause. The diagnostics record
+whether the recovered FFA5 handle/UUID appears as a characteristic in the
+Bleak service collection, the number of native-view characteristics, and
+which characteristic owns descriptor handles 0x0064 and 0x0065. They also
+retain the proxy ESPHome version, backend feature flags, and recovered
+service/CCCD handles. The FFA5 subscription remains best-effort; successful
+FFA5 reads, FF81 initialization, FF82/FF8A subscriptions, and watering
+commands are not changed.
 
 ### Next evidence needed
 
