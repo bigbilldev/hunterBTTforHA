@@ -306,8 +306,9 @@ class HunterBLEClient:
     async def _recover_misclassified_characteristic(self, uuid: str) -> bool:
         """Rebuild a characteristic when Bleak grouped its declaration as a descriptor.
 
-        The declaration is read through Bleak's descriptor API. The returned
-        declaration bytes, not a hard-coded property list, establish the value
+        The declaration is read through Bleak's characteristic-read API using
+        a temporary characteristic object with the declaration's ATT handle.
+        The returned bytes, not a hard-coded property list, establish the value
         handle, UUID, and properties. The reconstructed official Bleak object
         is passed directly to Bleak I/O methods, avoiding UUID/handle lookup
         against the malformed service collection.
