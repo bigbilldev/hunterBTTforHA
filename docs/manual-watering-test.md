@@ -30,7 +30,7 @@ only be performed when Zone 1 can safely discharge water.
 
 ## Captured reference values
 
-- FF8A 10-second example: `08 00 00 00 00 00 00 00 00 00 00 00 0A 00 00 00`
+- FF8A expected 10-second countdown layout (derived from the decoder's minutes/seconds fields): `08 00 00 00 00 00 00 00 00 00 00 00 0A 00 00 00`
 - FF82 Zone 1 running: `01 00 01 01 01 00 01 01 00 00 05 01 80 00`
 - FF82 both zones stopped: `01 00 01 01 00 00 01 01 00 00 01 01 80 00`
 
