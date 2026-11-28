@@ -128,7 +128,7 @@ class GattInventoryLoggingTests(unittest.TestCase):
             "hunter_btt.bluetooth.client", level=logging.INFO
         ) as logs:
             client._log_gatt_inventory()
-        output = "\\n".join(logs.output)
+        output = "\n".join(logs.output)
         self.assertIn("declaration_handle=99", output)
         self.assertIn("value_handle=100", output)
         self.assertIn("'handle': 101", output)
@@ -146,7 +146,7 @@ class GattInventoryLoggingTests(unittest.TestCase):
             "hunter_btt.bluetooth.client", level=logging.WARNING
         ) as logs:
             client._log_gatt_inventory()
-        self.assertIn("discovery omitted FFA5", "\\n".join(logs.output))
+        self.assertIn("discovery omitted FFA5", "\n".join(logs.output))
 
 
     def test_first_generation_without_ffa5_logs_without_cache_recovery(self):
