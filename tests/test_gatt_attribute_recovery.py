@@ -10,6 +10,7 @@ from bleak.backends.service import BleakGATTService, BleakGATTServiceCollection
 
 from hunter_btt.bluetooth.client import HunterBLEClient
 from hunter_btt.bluetooth.gatt_attributes import (
+    find_misclassified_characteristic,
     normalize_uuid,
     parse_characteristic_declaration,
 )
@@ -143,10 +144,11 @@ class GattAttributeRecoveryTests(unittest.IsolatedAsyncioTestCase):
         characteristic = client.characteristic_object(CLIENT_ID_UUID)
         self.assertIsNotNone(characteristic)
         self.assertEqual(characteristic.handle, 0x0064)
-        candidate_parent = next(iter(backend.services)).get_characteristic(
-            "0000ffa1-0000-1000-8000-00805f9b34fb"
+        candidate = find_misclassified_characteristic(
+            backend.services, CLIENT_ID_UUID
         )
-        self.assertIsNotNone(candidate_parent)
+        self.assertIsNotNone(candidate)
+        self.assertIs(candidate.parent_characteristic, backend.parent)
         self.assertEqual(characteristic.uuid, normalize_uuid(CLIENT_ID_UUID))
         self.assertEqual(set(characteristic.properties), {"read", "notify"})
         self.assertEqual(
