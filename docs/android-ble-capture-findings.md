@@ -232,3 +232,31 @@ when supported, resolves a fresh BLE device through Home Assistant, and retries
 once with service caching disabled. This is a diagnostic recovery path; it
 does not bypass the required FFA5 read or enable valve control if FFA5 remains
 missing.
+
+## November 27 HA / ESPHome proxy GATT declaration recovery
+
+The latest Home Assistant log does **not** show FFA5 being remapped to FFA0 or FFA1. It shows the FF80 service's Bleak representation grouping attributes at handles 0x005F–0x0065 under the FFA1 descriptor list:
+
+| ATT handle | Attribute UUID | Interpretation |
+|---:|---|---|
+| 0x005F | 0x2803 | Characteristic declaration |
+| 0x0060 | FF9F | Characteristic value |
+| 0x0061 | 0x2803 | Characteristic declaration |
+| 0x0062 | FFA4 | Characteristic value |
+| 0x0063 | 0x2803 | Characteristic declaration |
+| 0x0064 | FFA5 | Characteristic value |
+| 0x0065 | 0x2902 | Client Characteristic Configuration Descriptor |
+
+The Android 6.1.49 HCI capture independently places FFA5 at declaration/value/CCCD handles 0x0063/0x0064/0x0065. The declaration attribute (UUID 0x2803) contains the authoritative properties byte, little-endian value handle, and 128-bit characteristic UUID.
+
+The integration now has a narrowly scoped diagnostic recovery path:
+1. Find a 0x2803 declaration immediately preceding the FFA5 value attribute in the malformed descriptor inventory.
+2. Read the declaration using Bleak's descriptor-read operation.
+3. Parse and validate the declaration UUID, value handle, and read property against the adjacent discovered attribute.
+4. Construct a Bleak characteristic object using those parsed values and the discovered FFA5 value/CCCD handles.
+5. Read FFA5 using that exact characteristic object. The existing manager still requires a live, non-zero six-byte value before generating or writing FF81.
+6. If the declaration cannot be read, does not validate, or the live FFA5 read fails or returns invalid bytes, initialization remains fail-closed. No FFA0/FFA1 substitution is attempted.
+
+Bleak's public client API accepts a characteristic object for GATT reads and notifications. Passing the reconstructed object avoids resolving its UUID/handle through the malformed service collection. This demonstrates a Bleak-level route for trying the read; it does not yet prove the ESPHome proxy backend can perform it successfully on hardware. A real proxy-backed FFA5 read is still required. If the backend rejects the reconstructed object or the declaration read, the correct fix belongs in the ESPHome proxy/Bleak backend service-discovery reconstruction rather than in Hunter UUID mapping.
+
+No valve-control packet is sent by the recovery probe. FF81 remains gated behind the successful six-byte FFA5 read and the existing initialization sequence.
