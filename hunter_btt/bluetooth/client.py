@@ -704,9 +704,51 @@ class HunterBLEClient:
             if inspect.isawaitable(result):
                 asyncio.create_task(result)
 
-        # Pass Bleak the exact object obtained from this connection's discovered
-        # service database, not a UUID string that could be resolved separately.
-        await active_client.start_notify(expected_characteristic, _callback)
+        # The ESPHome Bleak backend receives this exact characteristic object.
+        # On REMOTE_CACHING proxies it obtains the CCCD from this object's
+        # descriptor list and writes that descriptor handle itself. Keep the
+        # recovered CCCD attached to this object; do not synthesize a write to
+        # the characteristic value handle.
+        cccd_descriptor = next(
+            (
+                descriptor
+                for descriptor in expected_characteristic.descriptors
+                if str(descriptor.uuid).strip().lower()
+                == "00002902-0000-1000-8000-00805f9b34fb"
+            ),
+            None,
+        )
+        backend = getattr(active_client, "_backend", None)
+        backend_name = type(backend or active_client).__qualname__
+        backend_feature_flags = getattr(backend, "_feature_flags", None)
+
+        if expected_uuid == CLIENT_ID_UUID:
+            _LOGGER.info(
+                "Hunter FFA5 notify path: characteristic_handle=%s "
+                "cccd_handle=%s backend=%s backend_feature_flags=%s",
+                expected_handle,
+                getattr(cccd_descriptor, "handle", None),
+                backend_name,
+                backend_feature_flags,
+            )
+
+        try:
+            # Bleak resolves this object and passes it to ESPHomeClient.start_notify.
+            # When REMOTE_CACHING is advertised, that backend writes CCCD 0x2902
+            # using cccd_descriptor.handle (expected 0x0065 for FFA5).
+            await active_client.start_notify(expected_characteristic, _callback)
+        except Exception:
+            if expected_uuid == CLIENT_ID_UUID:
+                _LOGGER.warning(
+                    "Hunter FFA5 notify activation failed: characteristic_handle=%s "
+                    "cccd_handle=%s backend=%s backend_feature_flags=%s",
+                    expected_handle,
+                    getattr(cccd_descriptor, "handle", None),
+                    backend_name,
+                    backend_feature_flags,
+                    exc_info=True,
+                )
+            raise
 
     async def stop_notify(self, uuid: str) -> None:
         if not self.connected:
