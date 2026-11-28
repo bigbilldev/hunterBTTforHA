@@ -744,17 +744,17 @@ class HunterBLEClient:
             for characteristic in (getattr(service, "characteristics", ()) or ())
             for descriptor in (getattr(characteristic, "descriptors", ()) or ())
         ]
-        backend_descriptor_100_owner = next(
+        backend_descriptor_100 = next(
             (
-                f"{owner.uuid}@{owner.handle}"
+                f"{descriptor.uuid}@{owner.uuid}@{owner.handle}"
                 for descriptor, owner in backend_descriptors
                 if getattr(descriptor, "handle", None) == 0x0064
             ),
             None,
         )
-        backend_descriptor_101_owner = next(
+        backend_descriptor_101 = next(
             (
-                f"{owner.uuid}@{owner.handle}"
+                f"{descriptor.uuid}@{owner.uuid}@{owner.handle}"
                 for descriptor, owner in backend_descriptors
                 if getattr(descriptor, "handle", None) == 0x0065
             ),
@@ -777,8 +777,8 @@ class HunterBLEClient:
                 "cccd_handle=%s recovered_service_uuid=%s backend=%s "
                 "backend_feature_flags=%s proxy_esphome_version=%s "
                 "backend_service_match=%s backend_characteristic_count=%s "
-                "backend_characteristic_100=%s backend_descriptor_100_owner=%s "
-                "backend_descriptor_101_owner=%s",
+                "backend_characteristic_100=%s backend_descriptor_100=%s "
+                "backend_descriptor_101=%s",
                 expected_handle,
                 getattr(cccd_descriptor, "handle", None),
                 getattr(expected_characteristic, "service_uuid", None),
@@ -788,8 +788,8 @@ class HunterBLEClient:
                 backend_service_match,
                 len(backend_characteristics),
                 backend_characteristic_100,
-                backend_descriptor_100_owner,
-                backend_descriptor_101_owner,
+                backend_descriptor_100,
+                backend_descriptor_101,
             )
 
         try:
@@ -804,7 +804,7 @@ class HunterBLEClient:
                     "cccd_handle=%s backend=%s backend_feature_flags=%s "
                     "proxy_esphome_version=%s backend_service_match=%s "
                     "backend_characteristic_count=%s backend_characteristic_100=%s "
-                    "backend_descriptor_100_owner=%s backend_descriptor_101_owner=%s",
+                    "backend_descriptor_100=%s backend_descriptor_101=%s",
                     expected_handle,
                     getattr(cccd_descriptor, "handle", None),
                     backend_name,
@@ -813,8 +813,8 @@ class HunterBLEClient:
                     backend_service_match,
                     len(backend_characteristics),
                     backend_characteristic_100,
-                    backend_descriptor_100_owner,
-                    backend_descriptor_101_owner,
+                    backend_descriptor_100,
+                    backend_descriptor_101,
                     exc_info=True,
                 )
             raise
