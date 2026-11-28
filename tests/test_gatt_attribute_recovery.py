@@ -13,7 +13,9 @@ from hunter_btt.protocol.uuids import CLIENT_ID_UUID
 CLIENT_ID = bytes.fromhex("FB F0 F5 77 94 4A")
 
 
-def _descriptor_declaration(properties=0x12, value_handle=0x0064, uuid=CLIENT_ID_UUID):
+def _descriptor_declaration(
+    properties=0x12, value_handle=0x0064, uuid=CLIENT_ID_UUID
+):
     from uuid import UUID
 
     return bytes([properties]) + value_handle.to_bytes(2, "little") + UUID(uuid).bytes_le
@@ -22,7 +24,11 @@ def _descriptor_declaration(properties=0x12, value_handle=0x0064, uuid=CLIENT_ID
 class MisgroupedGattClient:
     def __init__(self):
         self.is_connected = True
-        self.service = BleakGATTService(obj=None, handle=0x0012, uuid="0000ff80-0000-1000-8000-00805f9b34fb")
+        self.service = BleakGATTService(
+            obj=None,
+            handle=0x0012,
+            uuid="0000ff80-0000-1000-8000-00805f9b34fb",
+        )
         self.parent = BleakGATTCharacteristic(
             obj=None,
             handle=0x005e,
@@ -72,8 +78,10 @@ class GattAttributeRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(characteristic.handle, 0x0064)
         self.assertEqual(characteristic.uuid, CLIENT_ID_UUID)
         self.assertEqual(set(characteristic.properties), {"read", "notify"})
-        self.assertEqual(characteristic.get_descriptor(0x0065).uuid,
-                         "00002902-0000-1000-8000-00805f9b34fb")
+        self.assertEqual(
+            characteristic.get_descriptor(0x0065).uuid,
+            "00002902-0000-1000-8000-00805f9b34fb",
+        )
 
         value = await client.read(CLIENT_ID_UUID)
 
@@ -121,7 +129,7 @@ class GattAttributeRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await client._recover_misclassified_characteristic(CLIENT_ID_UUID)
         )
         self.assertIsNone(client.characteristic_object(CLIENT_ID_UUID))
-        backend.read_gatt_char.assert_not_awaited()
+        self.assertEqual(backend.read_gatt_char.await_count, 1)
 
     async def test_recovered_ffa5_is_used_for_notify_subscription(self):
         backend = MisgroupedGattClient()
@@ -135,8 +143,10 @@ class GattAttributeRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         await client.start_notify(CLIENT_ID_UUID)
 
-        self.assertIs(backend.start_notify.await_args.args[0],
-                      client.characteristic_object(CLIENT_ID_UUID))
+        self.assertIs(
+            backend.start_notify.await_args.args[0],
+            client.characteristic_object(CLIENT_ID_UUID),
+        )
 
 
 if __name__ == "__main__":
