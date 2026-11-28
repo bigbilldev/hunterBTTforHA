@@ -28,6 +28,8 @@ from bleak.exc import BleakError
 from ..protocol.generation import HunterGeneration
 from ..protocol.uuids import (
     COMMAND_UUID,
+    COUNTDOWN_UUID,
+    NOTIFY_UUID,
     ZONE_CONFIG_UUID,
 )
 
@@ -189,10 +191,12 @@ class HunterTransactionEngine:
         self._ack_event.set()
         event = self._notification_events.get(key)
         received_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
-        if key == "0000ff82-0000-1000-8000-00805f9b34fb":
+        if key in (NOTIFY_UUID, COUNTDOWN_UUID):
+            characteristic_name = "FF82" if key == NOTIFY_UUID else "FF8A"
             _LOGGER.info(
-                "Hunter FF82 notification cached at=%s sequence=%d payload_len=%d "
+                "Hunter %s notification cached at=%s sequence=%d payload_len=%d "
                 "payload=%s waiter_registered=%s",
+                characteristic_name,
                 received_at,
                 sequence,
                 len(value),
@@ -222,20 +226,24 @@ class HunterTransactionEngine:
         key = str(uuid).strip().lower()
         cached = self._notifications.get(key)
         if cached is not None:
-            if key == "0000ff82-0000-1000-8000-00805f9b34fb":
+            if key in (NOTIFY_UUID, COUNTDOWN_UUID):
+                characteristic_name = "FF82" if key == NOTIFY_UUID else "FF8A"
                 _LOGGER.info(
-                    "Hunter FF82 waiter consumed notification already cached "
+                    "Hunter %s waiter consumed notification already cached "
                     "before waiter registration: sequence=%d payload=%s",
+                    characteristic_name,
                     self._notification_sequence.get(key, 0),
                     cached.hex(" "),
                 )
             return cached
 
         event = self._notification_events.setdefault(key, asyncio.Event())
-        if key == "0000ff82-0000-1000-8000-00805f9b34fb":
+        if key in (NOTIFY_UUID, COUNTDOWN_UUID):
+            characteristic_name = "FF82" if key == NOTIFY_UUID else "FF8A"
             _LOGGER.info(
-                "Hunter FF82 waiter registered; waiting up to %.1f seconds "
+                "Hunter %s waiter registered; waiting up to %.1f seconds "
                 "for notification sequence after=%d",
+                characteristic_name,
                 timeout,
                 self._notification_sequence.get(key, 0),
             )
@@ -247,9 +255,11 @@ class HunterTransactionEngine:
             ) from err
 
         payload = self._notifications.get(key)
-        if key == "0000ff82-0000-1000-8000-00805f9b34fb" and payload is not None:
+        if key in (NOTIFY_UUID, COUNTDOWN_UUID) and payload is not None:
+            characteristic_name = "FF82" if key == NOTIFY_UUID else "FF8A"
             _LOGGER.info(
-                "Hunter FF82 waiter released by notification sequence=%d payload=%s",
+                "Hunter %s waiter released by notification sequence=%d payload=%s",
+                characteristic_name,
                 self._notification_sequence.get(key, 0),
                 payload.hex(" "),
             )
