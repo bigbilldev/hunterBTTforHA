@@ -230,6 +230,7 @@ class HunterBLEClient:
             except Exception:
                 active_client = self._client
                 self._client = None
+                self._recovered_characteristics = {}
                 if active_client is not None:
                     try:
                         if active_client.is_connected:
@@ -484,6 +485,7 @@ class HunterBLEClient:
             finally:
                 self._client = None
                 self._notification_status = {}
+                self._recovered_characteristics = {}
 
     async def reconnect(self) -> None:
         await self.disconnect()
