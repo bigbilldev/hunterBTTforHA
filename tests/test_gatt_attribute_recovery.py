@@ -209,9 +209,20 @@ class GattAttributeRecoveryTests(unittest.IsolatedAsyncioTestCase):
         client._client = backend
         await client._recover_misclassified_characteristic(CLIENT_ID_UUID)
         client.register_notification_callback(lambda _uuid, _payload: None)
+
         await client.start_notify(CLIENT_ID_UUID)
-        self.assertIs(backend.start_notify.await_args.args[0],
-                      client.characteristic_object(CLIENT_ID_UUID))
+
+        recovered = client.characteristic_object(CLIENT_ID_UUID)
+        self.assertIs(backend.start_notify.await_args.args[0], recovered)
+        # ESPHome's REMOTE_CACHING path reads the CCCD from the exact
+        # characteristic object passed to start_notify, then writes its handle.
+        cccd = recovered.get_descriptor(0x0065)
+        self.assertIsNotNone(cccd)
+        self.assertEqual(cccd.handle, 0x0065)
+        self.assertEqual(
+            cccd.uuid,
+            "00002902-0000-1000-8000-00805f9b34fb",
+        )
 
 
 if __name__ == "__main__":
