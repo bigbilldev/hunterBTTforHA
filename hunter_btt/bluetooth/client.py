@@ -712,7 +712,9 @@ class HunterBLEClient:
         cccd_descriptor = next(
             (
                 descriptor
-                for descriptor in expected_characteristic.descriptors
+                for descriptor in (
+                    getattr(expected_characteristic, "descriptors", ()) or ()
+                )
                 if str(descriptor.uuid).strip().lower()
                 == "00002902-0000-1000-8000-00805f9b34fb"
             ),
