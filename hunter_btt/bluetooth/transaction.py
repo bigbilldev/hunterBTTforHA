@@ -162,7 +162,9 @@ class HunterTransactionEngine:
         self._notification_events: dict[str, asyncio.Event] = {}
         self._notification_sequence: dict[str, int] = {}
         self._ff83_write_sequence = 0
-        self._last_ff83_write: dict[str, object] | None = None
+        self._last_ff83_write_id: int | None = None
+        self._last_ff83_command: str | None = None
+        self._last_ff83_write_at: datetime | None = None
         self._generation = HunterGeneration.UNKNOWN
 
     @property
@@ -195,15 +197,14 @@ class HunterTransactionEngine:
         received_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         if key in (NOTIFY_UUID, COUNTDOWN_UUID):
             characteristic_name = "FF82" if key == NOTIFY_UUID else "FF8A"
-            last_write = self._last_ff83_write
-            last_write_id = last_write["write_id"] if last_write else None
-            last_write_command = last_write["command"] if last_write else None
+            last_write_id = self._last_ff83_write_id
+            last_write_command = self._last_ff83_command
             last_write_age_ms = (
                 round(
-                    (datetime.now(timezone.utc) - last_write["started_at"]).total_seconds()
+                    (datetime.now(timezone.utc) - self._last_ff83_write_at).total_seconds()
                     * 1000
                 )
-                if last_write
+                if self._last_ff83_write_at is not None
                 else None
             )
             _LOGGER.info(
@@ -367,11 +368,9 @@ class HunterTransactionEngine:
                     None,
                 )
                 handle = handle_getter(target) if callable(handle_getter) else None
-                self._last_ff83_write = {
-                    "write_id": write_id,
-                    "command": command_name,
-                    "started_at": started_at,
-                }
+                self._last_ff83_write_id = write_id
+                self._last_ff83_command = command_name
+                self._last_ff83_write_at = started_at
                 _LOGGER.info(
                     "Hunter FF83 write begin at=%s write_id=%d attempt=%d/%d "
                     "command=%s handle=%s response=%s payload=%s "
