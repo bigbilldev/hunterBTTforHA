@@ -341,15 +341,41 @@ class HunterBLEClient:
             declaration_bytes = bytes(
                 await self._client.read_gatt_char(declaration_probe)
             )
+            _LOGGER.info(
+                "Hunter GATT raw characteristic declaration handle=0x%04X "
+                "bytes=%s",
+                candidate.declaration.handle,
+                declaration_bytes.hex(" ").upper(),
+            )
             parsed = parse_characteristic_declaration(declaration_bytes, target)
+
+            # Validate the declaration against all three adjacent attributes
+            # exposed by this connection's ESPHome-proxy GATT inventory.
+            if candidate.declaration.handle != 0x0063:
+                raise ValueError(
+                    "FFA5 declaration handle differs from Android capture: "
+                    f"0x{candidate.declaration.handle:04X} != 0x0063"
+                )
             if parsed.value_handle != candidate.value_attribute.handle:
                 raise ValueError(
-                    "declaration value handle does not match adjacent discovered "
-                    f"attribute ({parsed.value_handle} != {candidate.value_attribute.handle})"
+                    "declaration value handle does not match discovered FFA5 "
+                    f"attribute ({parsed.value_handle:#06x} != "
+                    f"{candidate.value_attribute.handle:#06x})"
                 )
-            if "read" not in parsed.properties:
+            if parsed.value_handle != 0x0064:
                 raise ValueError(
-                    f"declaration properties do not include read: {parsed.properties}"
+                    "FFA5 value handle differs from Android capture: "
+                    f"0x{parsed.value_handle:04X} != 0x0064"
+                )
+            if not {"read", "notify"}.issubset(parsed.properties):
+                raise ValueError(
+                    "FFA5 declaration must advertise read and notify; "
+                    f"properties={parsed.properties}"
+                )
+            if candidate.cccd is None or candidate.cccd.handle != 0x0065:
+                raise ValueError(
+                    "FFA5 CCCD must be discovered at handle 0x0065; "
+                    f"found={getattr(candidate.cccd, 'handle', None)}"
                 )
 
             characteristic = BleakGATTCharacteristic(
