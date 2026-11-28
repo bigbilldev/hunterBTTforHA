@@ -202,6 +202,22 @@ class GattAttributeRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await client._recover_misclassified_characteristic(CLIENT_ID_UUID))
         self.assertIsNone(client.characteristic_object(CLIENT_ID_UUID))
 
+    async def test_ffa5_notify_failure_is_recorded_without_aborting_subscribe(self):
+        backend = MisgroupedGattClient()
+        backend.read_gatt_char = AsyncMock(return_value=_descriptor_declaration(short=True))
+        backend.start_notify.side_effect = RuntimeError(
+            "handle=100 error=135 description=Illegal parameter"
+        )
+        client = HunterBLEClient(None, "AA:BB:CC:DD:EE:FF")
+        client._client = backend
+        await client._recover_misclassified_characteristic(CLIENT_ID_UUID)
+        client.register_notification_callback(lambda _uuid, _payload: None)
+
+        status = await client.subscribe(notification_uuids=(CLIENT_ID_UUID,))
+
+        self.assertIn("failed:", status[CLIENT_ID_UUID])
+        self.assertTrue(client.connected)
+
     async def test_recovered_ffa5_is_used_for_notify_subscription(self):
         backend = MisgroupedGattClient()
         backend.read_gatt_char = AsyncMock(return_value=_descriptor_declaration(short=True))
