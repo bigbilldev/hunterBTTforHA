@@ -30,7 +30,7 @@ def _descriptor_declaration(
 
 
 class MisgroupedGattClient:
-    def __init__(self):
+    def __init__(self, *, include_cccd=True):
         self.is_connected = True
         self.service = BleakGATTService(
             obj=None,
@@ -61,8 +61,10 @@ class MisgroupedGattClient:
             uuid="00002902-0000-1000-8000-00805f9b34fb",
             characteristic=self.parent,
         )
-        for descriptor in (self.declaration, self.value_attribute, self.cccd):
+        for descriptor in (self.declaration, self.value_attribute):
             self.parent.add_descriptor(descriptor)
+        if include_cccd:
+            self.parent.add_descriptor(self.cccd)
 
         self.services = [self.service]
         self.read_gatt_char = AsyncMock(
@@ -193,8 +195,7 @@ class GattAttributeRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(client.characteristic_object(CLIENT_ID_UUID))
 
     async def test_rejects_missing_cccd(self):
-        backend = MisgroupedGattClient()
-        backend.parent.descriptors.remove(backend.cccd)
+        backend = MisgroupedGattClient(include_cccd=False)
         backend.read_gatt_char = AsyncMock(return_value=_descriptor_declaration(short=True))
         client = HunterBLEClient(None, "AA:BB:CC:DD:EE:FF")
         client._client = backend
