@@ -13,10 +13,16 @@ import logging
 from datetime import datetime, timezone
 
 from bleak.exc import BleakError
+from bleak.backends.characteristic import BleakGATTCharacteristic
+from bleak.backends.descriptor import BleakGATTDescriptor
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 from homeassistant.components import bluetooth
 from homeassistant.core import HomeAssistant
 
+from .gatt_attributes import (
+    find_misclassified_characteristic,
+    parse_characteristic_declaration,
+)
 from ..protocol.uuids import (
     BATTERY_LEVEL_UUID,
     CLIENT_ID_UUID,
@@ -46,6 +52,7 @@ class HunterBLEClient:
         self._lock = asyncio.Lock()
         self._notification_callback = None
         self._notification_status: dict[str, str] = {}
+        self._recovered_characteristics: dict[str, BleakGATTCharacteristic] = {}
 
     @property
     def connected(self) -> bool:
@@ -87,6 +94,21 @@ class HunterBLEClient:
                         ],
                     }
                 )
+        for uuid, characteristic in self._recovered_characteristics.items():
+            if not any(item["uuid"] == uuid for item in inventory):
+                inventory.append(
+                    {
+                        "service_uuid": str(characteristic.service_uuid).strip().lower(),
+                        "uuid": uuid,
+                        "handle": characteristic.handle,
+                        "properties": sorted(str(prop).strip().lower() for prop in characteristic.properties),
+                        "descriptors": [
+                            {"uuid": str(item.uuid).strip().lower(), "handle": item.handle}
+                            for item in characteristic.descriptors
+                        ],
+                        "recovered_from_declaration": True,
+                    }
+                )
         return sorted(
             inventory,
             key=lambda item: (
@@ -114,15 +136,18 @@ class HunterBLEClient:
     def characteristic_uuids(self) -> set[str]:
         if self._client is None:
             return set()
-        return {
+        found = {
             str(characteristic.uuid).strip().lower()
             for service in self._client.services
             for characteristic in service.characteristics
         }
+        return found | set(self._recovered_characteristics)
 
     def characteristic_object(self, uuid: str):
         """Return the exact characteristic object from the active GATT database."""
         target = str(uuid).strip().lower()
+        if target in self._recovered_characteristics:
+            return self._recovered_characteristics[target]
         if self._client is None:
             return None
         for service in self._client.services:
@@ -140,6 +165,9 @@ class HunterBLEClient:
     def characteristic_properties(self, uuid: str) -> set[str]:
         """Return properties reported by the connected GATT database."""
         target = str(uuid).strip().lower()
+        recovered = self._recovered_characteristics.get(target)
+        if recovered is not None:
+            return {str(prop).strip().lower() for prop in recovered.properties}
         if self._client is None:
             return set()
         for service in self._client.services:
@@ -176,6 +204,7 @@ class HunterBLEClient:
                 return
 
             self._notification_status = {}
+            self._recovered_characteristics = {}
             device = await self._resolve_device()
             try:
                 self._client = await establish_connection(
@@ -184,6 +213,8 @@ class HunterBLEClient:
                     name=f"Hunter BTT - {self._address}",
                     use_services_cache=True,
                 )
+                self._log_gatt_inventory()
+                await self._recover_misclassified_characteristic(CLIENT_ID_UUID)
                 self._log_gatt_inventory()
 
                 # FFA5 is mandatory for the Android 6.1.49 FF81 serializer.
@@ -199,6 +230,7 @@ class HunterBLEClient:
             except Exception:
                 active_client = self._client
                 self._client = None
+                self._recovered_characteristics = {}
                 if active_client is not None:
                     try:
                         if active_client.is_connected:
@@ -248,6 +280,7 @@ class HunterBLEClient:
         finally:
             self._client = None
             self._notification_status = {}
+            self._recovered_characteristics = {}
 
         # Re-resolve via Home Assistant so the ESPHome proxy's current BLE
         # device path is used, rather than carrying a potentially stale object.
@@ -263,11 +296,103 @@ class HunterBLEClient:
             name=f"Hunter BTT - {self._address} (fresh GATT discovery)",
             use_services_cache=False,
         )
+        await self._recover_misclassified_characteristic(CLIENT_ID_UUID)
         if self.characteristic_object(CLIENT_ID_UUID) is None:
             _LOGGER.error(
-                "Hunter FFA5 remains missing after uncached GATT discovery "
-                "through the Home Assistant Bluetooth transport"
+                "Hunter FFA5 remains unavailable after uncached GATT discovery "
+                "and declaration-based reconstruction through Home Assistant Bluetooth"
             )
+
+    async def _recover_misclassified_characteristic(self, uuid: str) -> bool:
+        """Rebuild a characteristic when Bleak grouped its declaration as a descriptor.
+
+        The declaration is read through Bleak's characteristic-read API using
+        a temporary characteristic object with the declaration's ATT handle.
+        The returned bytes, not a hard-coded property list, establish the value
+        handle, UUID, and properties. The reconstructed official Bleak object
+        is passed directly to Bleak I/O methods, avoiding UUID/handle lookup
+        against the malformed service collection.
+        """
+        target = str(uuid).strip().lower()
+        if self._client is None or target in self._recovered_characteristics:
+            return target in self._recovered_characteristics
+
+        candidate = find_misclassified_characteristic(self._client.services, target)
+        if candidate is None:
+            _LOGGER.debug(
+                "Hunter GATT declaration parser found no misclassified %s entry",
+                target,
+            )
+            return False
+
+        try:
+            # 0x2803 is a GATT characteristic declaration attribute, not a
+            # descriptor. Use the backend's characteristic-read operation
+            # with a temporary Bleak object carrying the discovered handle;
+            # the ESPHome backend forwards that handle as a raw GATT read.
+            declaration_probe = BleakGATTCharacteristic(
+                obj=getattr(candidate.declaration, "obj", None),
+                handle=candidate.declaration.handle,
+                uuid=str(candidate.declaration.uuid),
+                properties=["read"],
+                max_write_without_response_size=20,
+                service=candidate.service,
+            )
+            declaration_bytes = bytes(
+                await self._client.read_gatt_char(declaration_probe)
+            )
+            parsed = parse_characteristic_declaration(declaration_bytes, target)
+            if parsed.value_handle != candidate.value_attribute.handle:
+                raise ValueError(
+                    "declaration value handle does not match adjacent discovered "
+                    f"attribute ({parsed.value_handle} != {candidate.value_attribute.handle})"
+                )
+            if "read" not in parsed.properties:
+                raise ValueError(
+                    f"declaration properties do not include read: {parsed.properties}"
+                )
+
+            characteristic = BleakGATTCharacteristic(
+                obj=getattr(candidate.value_attribute, "obj", None),
+                handle=parsed.value_handle,
+                uuid=parsed.uuid,
+                properties=list(parsed.properties),
+                max_write_without_response_size=20,
+                service=candidate.service,
+            )
+            if candidate.cccd is not None:
+                characteristic.add_descriptor(
+                    BleakGATTDescriptor(
+                        obj=getattr(candidate.cccd, "obj", None),
+                        handle=candidate.cccd.handle,
+                        uuid=str(candidate.cccd.uuid),
+                        characteristic=characteristic,
+                    )
+                )
+            self._recovered_characteristics[target] = characteristic
+
+            _LOGGER.warning(
+                "Hunter GATT recovered misclassified characteristic uuid=%s "
+                "declaration_handle=%s value_handle=%s properties=%s cccd_handle=%s; "
+                "live value read is still required before FF81",
+                target,
+                candidate.declaration.handle,
+                characteristic.handle,
+                parsed.properties,
+                getattr(candidate.cccd, "handle", None),
+            )
+            return True
+        except Exception as err:
+            _LOGGER.warning(
+                "Hunter GATT declaration reconstruction failed for %s "
+                "(declaration_handle=%s value_attribute_handle=%s): %s",
+                target,
+                getattr(candidate.declaration, "handle", None),
+                getattr(candidate.value_attribute, "handle", None),
+                err,
+                exc_info=True,
+            )
+            return False
 
     def _log_gatt_inventory(self) -> None:
         """Log GATT inventory and the Android FFA5 declaration/value/CCCD area."""
@@ -373,6 +498,7 @@ class HunterBLEClient:
             finally:
                 self._client = None
                 self._notification_status = {}
+                self._recovered_characteristics = {}
 
     async def reconnect(self) -> None:
         await self.disconnect()
@@ -383,7 +509,10 @@ class HunterBLEClient:
         async with self._lock:
             assert self._client is not None
             try:
-                return bytes(await self._client.read_gatt_char(uuid))
+                characteristic = self.characteristic_object(uuid)
+                if characteristic is None:
+                    raise BleakError(f"Characteristic {uuid} was not discovered")
+                return bytes(await self._client.read_gatt_char(characteristic))
             except Exception as err:
                 raise BleakError(f"Read failed for {uuid}: {err}") from err
 
@@ -558,7 +687,8 @@ class HunterBLEClient:
             return
         assert self._client is not None
         try:
-            await self._client.stop_notify(uuid)
+            characteristic = self.characteristic_object(uuid)
+            await self._client.stop_notify(characteristic or uuid)
         except Exception:
             _LOGGER.debug("Unable to unsubscribe %s", uuid, exc_info=True)
 
