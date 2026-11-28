@@ -10,6 +10,15 @@ from hunter_btt.protocol.generation import HunterCapabilities, HunterGeneration
 from hunter_btt.protocol.uuids import (
     BATTERY_LEVEL_UUID,
     COMMAND_UUID,
+    CLIENT_ID_UUID,
+    COUNTDOWN_UUID,
+    NOTIFY_UUID,
+    STATUS_NOTIFY_UUID,
+    ZONE1_IMAGE_NOTIFY_UUID,
+    ZONE2_IMAGE_NOTIFY_UUID,
+    IRRIGATION_LOG_COUNT_UUID,
+    IRRIGATION_LOG_PAGE_UUID,
+    IRRIGATION_LOG_RECORD_UUID,
     SECOND_GEN_INIT_NOTIFICATION_UUIDS,
     SECOND_SERVICE_UUID,
     ZONE1_CONFIG_UUID,
@@ -46,9 +55,21 @@ class NotificationSubscriptionTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(
-            subscribed,
-            [*SECOND_GEN_INIT_NOTIFICATION_UUIDS, BATTERY_LEVEL_UUID],
+            SECOND_GEN_INIT_NOTIFICATION_UUIDS,
+            (
+                NOTIFY_UUID,
+                COUNTDOWN_UUID,
+                STATUS_NOTIFY_UUID,
+                ZONE1_IMAGE_NOTIFY_UUID,
+                ZONE2_IMAGE_NOTIFY_UUID,
+                IRRIGATION_LOG_COUNT_UUID,
+                IRRIGATION_LOG_PAGE_UUID,
+                IRRIGATION_LOG_RECORD_UUID,
+                CLIENT_ID_UUID,
+            ),
         )
+        self.assertEqual(subscribed, list(SECOND_GEN_INIT_NOTIFICATION_UUIDS))
+        self.assertNotIn(BATTERY_LEVEL_UUID, subscribed)
         self.assertEqual(
             tuple(subscribed[:9]),
             SECOND_GEN_INIT_NOTIFICATION_UUIDS,
@@ -166,7 +187,7 @@ class NotificationSubscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(status[failed_uuid].startswith("failed:"))
         self.assertIn(SECOND_GEN_INIT_NOTIFICATION_UUIDS[0], subscribed)
         self.assertIn(SECOND_GEN_INIT_NOTIFICATION_UUIDS[2], subscribed)
-        self.assertEqual(len(status), 10)
+        self.assertEqual(len(status), 9)
 
 
 if __name__ == "__main__":

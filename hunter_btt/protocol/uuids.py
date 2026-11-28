@@ -56,15 +56,15 @@ UNKNOWN_FFA5_NOTIFY_UUID: Final = CLIENT_ID_UUID
 # Exact order of the nine proprietary CCCD writes in the Android capture.
 # The standard Battery Level CCCD is not part of this captured sequence.
 SECOND_GEN_INIT_NOTIFICATION_UUIDS: Final = (
-    ZONE2_IMAGE_NOTIFY_UUID,       # CCCD 0x004D
-    CLIENT_ID_UUID,                # CCCD 0x0065
+    NOTIFY_UUID,                   # CCCD 0x0017
+    COUNTDOWN_UUID,                # CCCD 0x0028
+    STATUS_NOTIFY_UUID,            # CCCD 0x0033
+    ZONE1_IMAGE_NOTIFY_UUID,        # CCCD 0x0048
+    ZONE2_IMAGE_NOTIFY_UUID,        # CCCD 0x004D
     IRRIGATION_LOG_COUNT_UUID,     # CCCD 0x0054
-    STATUS_NOTIFY_UUID,            # CCCD 0x0033 (FF8F)
     IRRIGATION_LOG_PAGE_UUID,      # CCCD 0x0057
-    COUNTDOWN_UUID,                # CCCD 0x0028 (FF8A)
     IRRIGATION_LOG_RECORD_UUID,    # CCCD 0x005A
-    NOTIFY_UUID,                   # CCCD 0x0017 (FF82)
-    ZONE1_IMAGE_NOTIFY_UUID,       # CCCD 0x0048
+    CLIENT_ID_UUID,                # CCCD 0x0065
 )
 
 FF81_UUID: Final = PASSCODE_UUID

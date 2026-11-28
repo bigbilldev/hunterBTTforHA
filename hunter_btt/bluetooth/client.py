@@ -19,11 +19,13 @@ from homeassistant.core import HomeAssistant
 
 from ..protocol.uuids import (
     BATTERY_LEVEL_UUID,
+    CLIENT_ID_UUID,
+    COMMAND_UUID,
     COUNTDOWN_UUID,
     NOTIFY_UUID,
     PASSCODE_UUID,
     STATUS_NOTIFY_UUID,
-    COMMAND_UUID,
+    SECOND_SERVICE_UUID,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -76,6 +78,13 @@ class HunterBLEClient:
                             str(prop).strip().lower()
                             for prop in characteristic.properties
                         ),
+                        "descriptors": [
+                            {
+                                "uuid": str(descriptor.uuid).strip().lower(),
+                                "handle": getattr(descriptor, "handle", None),
+                            }
+                            for descriptor in (getattr(characteristic, "descriptors", ()) or ())
+                        ],
                     }
                 )
         return sorted(
@@ -147,60 +156,203 @@ class HunterBLEClient:
         props = self.characteristic_properties(COMMAND_UUID)
         return bool({"write", "write-without-response"} & props)
 
+    async def _resolve_device(self):
+        """Resolve the current proxy-backed BLEDevice for this address."""
+        device = bluetooth.async_ble_device_from_address(
+            self._hass,
+            self._address,
+            connectable=True,
+        )
+        if inspect.isawaitable(device):
+            device = await device
+        if device is None:
+            raise BleakError(f"Unable to locate BLE device {self._address}")
+        return device
+
     async def connect(self) -> None:
-        """Connect and let Bleak perform GATT service discovery."""
+        """Connect through HA Bluetooth and refresh incomplete cached GATT data."""
         async with self._lock:
             if self.connected:
                 return
 
-            device = bluetooth.async_ble_device_from_address(
-                self._hass,
-                self._address,
-                connectable=True,
-            )
-            if inspect.isawaitable(device):
-                device = await device
-            if device is None:
-                raise BleakError(
-                    f"Unable to locate BLE device {self._address}"
-                )
-
+            self._notification_status = {}
+            device = await self._resolve_device()
             try:
                 self._client = await establish_connection(
                     BleakClientWithServiceCache,
                     device,
                     name=f"Hunter BTT - {self._address}",
+                    use_services_cache=True,
                 )
                 self._log_gatt_inventory()
+
+                # FFA5 is mandatory for the Android 6.1.49 FF81 serializer.
+                # Android's database has FFA5 at value handle 0x0064, between
+                # declaration 0x0063 and CCCD 0x0065. HA must not proceed using
+                # an incomplete cached service collection.
+                if (
+                    SECOND_SERVICE_UUID in self.service_uuids
+                    and self.characteristic_object(CLIENT_ID_UUID) is None
+                ):
+                    await self._refresh_gatt_services()
+                    self._log_gatt_inventory()
             except Exception:
+                active_client = self._client
                 self._client = None
+                if active_client is not None:
+                    try:
+                        if active_client.is_connected:
+                            await active_client.disconnect()
+                    except Exception:
+                        _LOGGER.debug(
+                            "Unable to clean up failed Hunter BLE connection",
+                            exc_info=True,
+                        )
                 raise
 
+    async def _refresh_gatt_services(self) -> None:
+        """Clear a suspect GATT cache and reconnect once with fresh discovery.
+
+        This is scoped to the Android-known FFA5 characteristic. It does not
+        switch transport: the refreshed BLEDevice is resolved through HA's
+        Bluetooth integration, so ESPHome proxy routing remains in use.
+        """
+        stale_client = self._client
+        if stale_client is None:
+            return
+
+        clear_cache = getattr(stale_client, "clear_cache", None)
+        cache_cleared = False
+        if callable(clear_cache):
+            try:
+                result = clear_cache()
+                if inspect.isawaitable(result):
+                    result = await result
+                cache_cleared = bool(result)
+            except Exception as err:
+                _LOGGER.warning(
+                    "Hunter GATT cache clear failed; forcing uncached discovery "
+                    "on reconnect: %s",
+                    err,
+                )
+
+        try:
+            if stale_client.is_connected:
+                await stale_client.disconnect()
+        except Exception as err:
+            _LOGGER.warning(
+                "Hunter stale GATT client disconnect failed; continuing with "
+                "an uncached proxy connection: %s",
+                err,
+            )
+        finally:
+            self._client = None
+            self._notification_status = {}
+
+        # Re-resolve via Home Assistant so the ESPHome proxy's current BLE
+        # device path is used, rather than carrying a potentially stale object.
+        fresh_device = await self._resolve_device()
+        _LOGGER.warning(
+            "Hunter FFA5 missing after cached GATT discovery; retrying once "
+            "with fresh service discovery (cache_cleared=%s)",
+            cache_cleared,
+        )
+        self._client = await establish_connection(
+            BleakClientWithServiceCache,
+            fresh_device,
+            name=f"Hunter BTT - {self._address} (fresh GATT discovery)",
+            use_services_cache=False,
+        )
+        if self.characteristic_object(CLIENT_ID_UUID) is None:
+            _LOGGER.error(
+                "Hunter FFA5 remains missing after uncached GATT discovery "
+                "through the Home Assistant Bluetooth transport"
+            )
 
     def _log_gatt_inventory(self) -> None:
-        """Log the discovered GATT table and writable characteristics."""
+        """Log GATT inventory and the Android FFA5 declaration/value/CCCD area."""
         inventory = self.gatt_inventory
         writable = self.writable_characteristics
+        ffa5 = next(
+            (item for item in inventory if item["uuid"] == CLIENT_ID_UUID),
+            None,
+        )
         ff83 = next(
             (item for item in inventory if item["uuid"] == COMMAND_UUID),
             None,
         )
         _LOGGER.info(
             "Hunter GATT discovery complete: services=%d characteristics=%d "
-            "writable=%d FF83=%s",
+            "writable=%d FF83=%s FFA5=%s",
             len(self.service_uuids),
             len(inventory),
             len(writable),
             "present" if ff83 else "missing",
+            "present" if ffa5 else "missing",
         )
         for item in inventory:
             _LOGGER.debug(
-                "Hunter GATT characteristic service=%s uuid=%s handle=%s properties=%s",
+                "Hunter GATT characteristic service=%s uuid=%s handle=%s "
+                "properties=%s descriptors=%s",
                 item["service_uuid"],
                 item["uuid"],
                 item["handle"],
                 item["properties"],
+                item.get("descriptors", []),
             )
+
+        handle_window = [
+            item for item in inventory
+            if isinstance(item.get("handle"), int)
+            and 0x0060 <= item["handle"] <= 0x0068
+        ]
+        descriptor_window = [
+            {
+                "characteristic_uuid": item["uuid"],
+                **descriptor,
+            }
+            for item in inventory
+            for descriptor in item.get("descriptors", [])
+            if isinstance(descriptor.get("handle"), int)
+            and 0x0060 <= descriptor["handle"] <= 0x0068
+        ]
+        _LOGGER.info(
+            "Hunter GATT FFA5 handle-window 0x0060-0x0068: "
+            "characteristics=%s descriptors=%s",
+            handle_window,
+            descriptor_window,
+        )
+        if ffa5 is None and SECOND_SERVICE_UUID in self.service_uuids:
+            _LOGGER.warning(
+                "Hunter GATT discovery omitted FFA5. Android 6.1.49 exposes "
+                "declaration=0x0063, value=0x0064, CCCD=0x0065; "
+                "neighboring HA characteristics=%s",
+                handle_window,
+            )
+        else:
+            value_handle = ffa5.get("handle")
+            descriptors = ffa5.get("descriptors", [])
+            cccd = next(
+                (
+                    descriptor for descriptor in descriptors
+                    if descriptor.get("uuid") == "00002902-0000-1000-8000-00805f9b34fb"
+                ),
+                None,
+            )
+            _LOGGER.info(
+                "Hunter FFA5 discovery details: declaration_handle=%s "
+                "value_handle=%s properties=%s cccd=%s",
+                value_handle - 1 if isinstance(value_handle, int) else None,
+                value_handle,
+                ffa5.get("properties"),
+                cccd,
+            )
+            if value_handle != 0x0064 or cccd is None or cccd.get("handle") != 0x0065:
+                _LOGGER.warning(
+                    "Hunter FFA5 GATT layout differs from Android 6.1.49 "
+                    "capture: expected declaration/value/CCCD=0x0063/0x0064/0x0065"
+                )
+
         for item in writable:
             _LOGGER.info(
                 "Hunter GATT writable characteristic uuid=%s handle=%s properties=%s",
@@ -212,12 +364,14 @@ class HunterBLEClient:
     async def disconnect(self) -> None:
         async with self._lock:
             if self._client is None:
+                self._notification_status = {}
                 return
             try:
                 if self._client.is_connected:
                     await self._client.disconnect()
             finally:
                 self._client = None
+                self._notification_status = {}
 
     async def reconnect(self) -> None:
         await self.disconnect()
@@ -425,15 +579,20 @@ class HunterBLEClient:
             await self.connect()
 
         self._notification_status = {}
+        include_legacy_battery_notify = notification_uuids is None
         if notification_uuids is None:
             notification_uuids = (
                 NOTIFY_UUID,
                 COUNTDOWN_UUID,
                 STATUS_NOTIFY_UUID,
             )
-        # The captured Android app enables the nine proprietary CCCDs before
-        # writing FF81. Keep Battery Level as a separate optional subscription.
-        subscription_order = (*notification_uuids, BATTERY_LEVEL_UUID)
+        # Android 6.1.49 enables exactly the nine proprietary CCCDs. It reads
+        # Battery Level (2A19) separately and does not enable its CCCD.
+        subscription_order = (
+            (*notification_uuids, BATTERY_LEVEL_UUID)
+            if include_legacy_battery_notify
+            else tuple(notification_uuids)
+        )
         for uuid in subscription_order:
             properties = self.characteristic_properties(uuid)
             if not properties:
