@@ -149,6 +149,32 @@ class TransactionSequenceTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_ff83_stop_logs_write_and_notification_correlation(self):
+        with self.assertLogs(
+            "hunter_btt.bluetooth.transaction",
+            level="INFO",
+        ) as captured:
+            await self.engine.stop()
+            await self.engine.notification(
+                "0000ff8a-0000-1000-8000-00805f9b34fb",
+                bytes.fromhex("08 00 00 00 00 00 00 00 00 00 00 00 06 00 00 00"),
+            )
+            await self.engine.notification(
+                "0000ff82-0000-1000-8000-00805f9b34fb",
+                bytes.fromhex("01 00 01 01 00 00 01 01 00 00 01 01 80 00"),
+            )
+
+        output = "\n".join(captured.output)
+        self.assertIn("Hunter FF83 write begin", output)
+        self.assertIn("write_id=1", output)
+        self.assertIn("command=STOP", output)
+        self.assertIn("payload=01 00 02 01 00 02 01 00 00 00 00 00", output)
+        self.assertIn("Hunter FF83 write completed", output)
+        self.assertIn("Hunter FF8A notification cached", output)
+        self.assertIn("Hunter FF82 notification cached", output)
+        self.assertIn("last_ff83_write_id=1", output)
+        self.assertIn("last_ff83_command=STOP", output)
+
     async def test_att_write_not_permitted_fails_without_retry_or_reconnect(self):
         self.connection.client.write_error = BleakError(
             "handle=31 error=3 description=Write not permitted"

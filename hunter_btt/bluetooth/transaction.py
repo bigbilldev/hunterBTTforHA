@@ -161,6 +161,10 @@ class HunterTransactionEngine:
         self._notifications: dict[str, bytes] = {}
         self._notification_events: dict[str, asyncio.Event] = {}
         self._notification_sequence: dict[str, int] = {}
+        self._ff83_write_sequence = 0
+        self._last_ff83_write_id: int | None = None
+        self._last_ff83_command: str | None = None
+        self._last_ff83_write_at: datetime | None = None
         self._generation = HunterGeneration.UNKNOWN
 
     @property
@@ -193,15 +197,29 @@ class HunterTransactionEngine:
         received_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         if key in (NOTIFY_UUID, COUNTDOWN_UUID):
             characteristic_name = "FF82" if key == NOTIFY_UUID else "FF8A"
+            last_write_id = self._last_ff83_write_id
+            last_write_command = self._last_ff83_command
+            last_write_age_ms = (
+                round(
+                    (datetime.now(timezone.utc) - self._last_ff83_write_at).total_seconds()
+                    * 1000
+                )
+                if self._last_ff83_write_at is not None
+                else None
+            )
             _LOGGER.info(
                 "Hunter %s notification cached at=%s sequence=%d payload_len=%d "
-                "payload=%s waiter_registered=%s",
+                "payload=%s waiter_registered=%s last_ff83_write_id=%s "
+                "last_ff83_command=%s last_ff83_write_age_ms=%s",
                 characteristic_name,
                 received_at,
                 sequence,
                 len(value),
                 value.hex(" "),
                 event is not None,
+                last_write_id,
+                last_write_command,
+                last_write_age_ms,
             )
         if event is not None:
             event.set()
@@ -321,13 +339,85 @@ class HunterTransactionEngine:
                     "Second-generation FF83 writes must contain exactly 12 bytes."
                 )
 
-        async def operation() -> None:
-            await self._connection.ensure_connection()
-            await self._connection.client.write(
-                uuid,
-                payload,
-                response=response,
+        is_ff83 = target == FF83_UUID.lower()
+        write_id = None
+        command_name = None
+        if is_ff83:
+            self._ff83_write_sequence += 1
+            write_id = self._ff83_write_sequence
+            command_payload = bytes(payload)
+            command_name = (
+                "STOP"
+                if command_payload == STOP_PACKET
+                else "START_ARM"
+                if command_payload == START_ARM_PACKET
+                else "OTHER"
             )
+
+        attempt = 0
+
+        async def operation() -> None:
+            nonlocal attempt
+            attempt += 1
+            await self._connection.ensure_connection()
+            started_at = datetime.now(timezone.utc)
+            if is_ff83:
+                handle_getter = getattr(
+                    self._connection.client,
+                    "characteristic_handle",
+                    None,
+                )
+                handle = handle_getter(target) if callable(handle_getter) else None
+                self._last_ff83_write_id = write_id
+                self._last_ff83_command = command_name
+                self._last_ff83_write_at = started_at
+                _LOGGER.info(
+                    "Hunter FF83 write begin at=%s write_id=%d attempt=%d/%d "
+                    "command=%s handle=%s response=%s payload=%s "
+                    "ff82_sequence=%d ff8a_sequence=%d",
+                    started_at.isoformat(timespec="milliseconds"),
+                    write_id,
+                    attempt,
+                    MAX_RETRIES + 1,
+                    command_name,
+                    handle,
+                    response,
+                    bytes(payload).hex(" "),
+                    self._notification_sequence.get(NOTIFY_UUID, 0),
+                    self._notification_sequence.get(COUNTDOWN_UUID, 0),
+                )
+            try:
+                await self._connection.client.write(
+                    uuid,
+                    payload,
+                    response=response,
+                )
+            except Exception as err:
+                if is_ff83:
+                    failed_at = datetime.now(timezone.utc)
+                    _LOGGER.warning(
+                        "Hunter FF83 write failed at=%s write_id=%d attempt=%d "
+                        "command=%s elapsed_ms=%d error=%s",
+                        failed_at.isoformat(timespec="milliseconds"),
+                        write_id,
+                        attempt,
+                        command_name,
+                        round((failed_at - started_at).total_seconds() * 1000),
+                        err,
+                        exc_info=True,
+                    )
+                raise
+            if is_ff83:
+                completed_at = datetime.now(timezone.utc)
+                _LOGGER.info(
+                    "Hunter FF83 write completed at=%s write_id=%d attempt=%d "
+                    "command=%s elapsed_ms=%d",
+                    completed_at.isoformat(timespec="milliseconds"),
+                    write_id,
+                    attempt,
+                    command_name,
+                    round((completed_at - started_at).total_seconds() * 1000),
+                )
 
         await self._retry(
             operation,

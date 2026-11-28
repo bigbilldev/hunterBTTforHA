@@ -723,15 +723,35 @@ class HunterBLEClient:
         backend = getattr(active_client, "_backend", None)
         backend_name = type(backend or active_client).__qualname__
         backend_feature_flags = getattr(backend, "_feature_flags", None)
+        backend_services = getattr(active_client, "services", None)
+        backend_characteristics = [
+            characteristic
+            for service in (backend_services or ())
+            for characteristic in (getattr(service, "characteristics", ()) or ())
+        ]
+        backend_service_match = any(
+            getattr(characteristic, "handle", None) == expected_handle
+            and str(getattr(characteristic, "uuid", "")).strip().lower()
+            == expected_uuid
+            for characteristic in backend_characteristics
+        )
+        proxy_device_info = getattr(backend, "_device_info", None)
+        proxy_esphome_version = getattr(proxy_device_info, "esphome_version", None)
 
         if expected_uuid == CLIENT_ID_UUID:
             _LOGGER.info(
                 "Hunter FFA5 notify path: characteristic_handle=%s "
-                "cccd_handle=%s backend=%s backend_feature_flags=%s",
+                "cccd_handle=%s recovered_service_uuid=%s backend=%s "
+                "backend_feature_flags=%s proxy_esphome_version=%s "
+                "backend_service_match=%s backend_characteristic_count=%s",
                 expected_handle,
                 getattr(cccd_descriptor, "handle", None),
+                getattr(expected_characteristic, "service_uuid", None),
                 backend_name,
                 backend_feature_flags,
+                proxy_esphome_version,
+                backend_service_match,
+                len(backend_characteristics),
             )
 
         try:
@@ -743,11 +763,14 @@ class HunterBLEClient:
             if expected_uuid == CLIENT_ID_UUID:
                 _LOGGER.warning(
                     "Hunter FFA5 notify activation failed: characteristic_handle=%s "
-                    "cccd_handle=%s backend=%s backend_feature_flags=%s",
+                    "cccd_handle=%s backend=%s backend_feature_flags=%s "
+                    "proxy_esphome_version=%s backend_service_match=%s",
                     expected_handle,
                     getattr(cccd_descriptor, "handle", None),
                     backend_name,
                     backend_feature_flags,
+                    proxy_esphome_version,
+                    backend_service_match,
                     exc_info=True,
                 )
             raise
