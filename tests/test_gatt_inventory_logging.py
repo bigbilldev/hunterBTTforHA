@@ -149,5 +149,29 @@ class GattInventoryLoggingTests(unittest.TestCase):
         self.assertIn("discovery omitted FFA5", "\\n".join(logs.output))
 
 
+    def test_first_generation_without_ffa5_logs_without_cache_recovery(self):
+        service = FakeService(
+            "0000fcc0-0000-1000-8000-00805f9b34fb",
+            [
+                FakeCharacteristic(
+                    "0000fcc1-0000-1000-8000-00805f9b34fb",
+                    0x0062,
+                    ["read", "notify"],
+                )
+            ],
+        )
+        client = HunterBLEClient(None, "AA:BB:CC:DD:EE:FF")
+        client._client = FakeBleakClient([service])
+
+        with self.assertLogs(
+            "hunter_btt.bluetooth.client", level=logging.DEBUG
+        ) as logs:
+            client._log_gatt_inventory()
+
+        output = "\n".join(logs.output)
+        self.assertIn("Hunter GATT discovery complete", output)
+        self.assertNotIn("omitted FFA5", output)
+
+
 if __name__ == "__main__":
     unittest.main()

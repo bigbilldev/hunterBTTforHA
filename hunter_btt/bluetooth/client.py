@@ -322,13 +322,14 @@ class HunterBLEClient:
             handle_window,
             descriptor_window,
         )
-        if ffa5 is None and SECOND_SERVICE_UUID in self.service_uuids:
-            _LOGGER.warning(
-                "Hunter GATT discovery omitted FFA5. Android 6.1.49 exposes "
-                "declaration=0x0063, value=0x0064, CCCD=0x0065; "
-                "neighboring HA characteristics=%s",
-                handle_window,
-            )
+        if ffa5 is None:
+            if SECOND_SERVICE_UUID in self.service_uuids:
+                _LOGGER.warning(
+                    "Hunter GATT discovery omitted FFA5. Android 6.1.49 exposes "
+                    "declaration=0x0063, value=0x0064, CCCD=0x0065; "
+                    "neighboring HA characteristics=%s",
+                    handle_window,
+                )
         else:
             value_handle = ffa5.get("handle")
             descriptors = ffa5.get("descriptors", [])
