@@ -235,7 +235,11 @@ missing.
 
 ## November 27 HA / ESPHome proxy GATT declaration recovery
 
-The latest Home Assistant log does **not** show FFA5 being remapped to FFA0 or FFA1. It shows the FF80 service's Bleak representation grouping attributes at handles 0x005F–0x0065 under the FFA1 descriptor list:
+The latest Home Assistant log does **not** show FFA5 being remapped to FFA0 or FFA1. It shows the FF80 service's Bleak representation grouping attributes at handles 0x005F–0x0065 under the FFA1 descriptor list.
+
+Source inspection narrows where this grouping occurs: bleak-esphome builds its Bleak service collection from the ESPHome API's GATT response, copying each API characteristic's descriptors into that characteristic's Bleak descriptor list. The API schema itself models descriptors as a repeated field of each characteristic. Therefore the malformed parent/child grouping is already present in the service data supplied by the ESPHome proxy (or in the firmware code that constructs that response); Bleak is faithfully representing the supplied grouping rather than independently discovering ATT declarations and deciding to re-parent them.
+
+
 
 | ATT handle | Attribute UUID | Interpretation |
 |---:|---|---|
