@@ -399,13 +399,16 @@ class HunterBLEClient:
 
             _LOGGER.warning(
                 "Hunter GATT recovered misclassified characteristic uuid=%s "
-                "declaration_handle=%s value_handle=%s properties=%s cccd_handle=%s; "
+                "declaration_handle=%s value_handle=%s properties=%s cccd_handle=%s "
+                "parent_characteristic=%s parent_handle=%s; "
                 "live value read is still required before FF81",
                 target,
                 candidate.declaration.handle,
                 characteristic.handle,
                 parsed.properties,
                 getattr(candidate.cccd, "handle", None),
+                candidate.parent_characteristic.uuid,
+                candidate.parent_characteristic.handle,
             )
             return True
         except Exception as err:
@@ -735,6 +738,36 @@ class HunterBLEClient:
             == expected_uuid
             for characteristic in backend_characteristics
         )
+        backend_descriptors = [
+            (descriptor, characteristic)
+            for service in (backend_services or ())
+            for characteristic in (getattr(service, "characteristics", ()) or ())
+            for descriptor in (getattr(characteristic, "descriptors", ()) or ())
+        ]
+        backend_descriptor_100_owner = next(
+            (
+                f"{owner.uuid}@{owner.handle}"
+                for descriptor, owner in backend_descriptors
+                if getattr(descriptor, "handle", None) == 0x0064
+            ),
+            None,
+        )
+        backend_descriptor_101_owner = next(
+            (
+                f"{owner.uuid}@{owner.handle}"
+                for descriptor, owner in backend_descriptors
+                if getattr(descriptor, "handle", None) == 0x0065
+            ),
+            None,
+        )
+        backend_characteristic_100 = next(
+            (
+                f"{item.uuid}@{item.handle}"
+                for item in backend_characteristics
+                if getattr(item, "handle", None) == 0x0064
+            ),
+            None,
+        )
         proxy_device_info = getattr(backend, "_device_info", None)
         proxy_esphome_version = getattr(proxy_device_info, "esphome_version", None)
 
@@ -743,7 +776,9 @@ class HunterBLEClient:
                 "Hunter FFA5 notify path: characteristic_handle=%s "
                 "cccd_handle=%s recovered_service_uuid=%s backend=%s "
                 "backend_feature_flags=%s proxy_esphome_version=%s "
-                "backend_service_match=%s backend_characteristic_count=%s",
+                "backend_service_match=%s backend_characteristic_count=%s "
+                "backend_characteristic_100=%s backend_descriptor_100_owner=%s "
+                "backend_descriptor_101_owner=%s",
                 expected_handle,
                 getattr(cccd_descriptor, "handle", None),
                 getattr(expected_characteristic, "service_uuid", None),
@@ -752,6 +787,9 @@ class HunterBLEClient:
                 proxy_esphome_version,
                 backend_service_match,
                 len(backend_characteristics),
+                backend_characteristic_100,
+                backend_descriptor_100_owner,
+                backend_descriptor_101_owner,
             )
 
         try:
@@ -764,13 +802,19 @@ class HunterBLEClient:
                 _LOGGER.warning(
                     "Hunter FFA5 notify activation failed: characteristic_handle=%s "
                     "cccd_handle=%s backend=%s backend_feature_flags=%s "
-                    "proxy_esphome_version=%s backend_service_match=%s",
+                    "proxy_esphome_version=%s backend_service_match=%s "
+                    "backend_characteristic_count=%s backend_characteristic_100=%s "
+                    "backend_descriptor_100_owner=%s backend_descriptor_101_owner=%s",
                     expected_handle,
                     getattr(cccd_descriptor, "handle", None),
                     backend_name,
                     backend_feature_flags,
                     proxy_esphome_version,
                     backend_service_match,
+                    len(backend_characteristics),
+                    backend_characteristic_100,
+                    backend_descriptor_100_owner,
+                    backend_descriptor_101_owner,
                     exc_info=True,
                 )
             raise
