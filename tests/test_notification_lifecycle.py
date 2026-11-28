@@ -58,7 +58,7 @@ class NotificationLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_ff82_subscription_uses_exact_active_database_characteristic(self):
         characteristic = FakeCharacteristic()
         fake_client = FakeBleakClient(characteristic)
-        client = HunterBLEClient.__new__(HunterBLEClient)
+        client = HunterBLEClient(None, "AA:BB:CC:DD:EE:FF")
         client._client = fake_client
         client._notification_callback = lambda uuid, payload: None
 
@@ -72,7 +72,7 @@ class NotificationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         other_characteristic = FakeCharacteristic()
         fake_client = FakeBleakClient(characteristic)
         received = []
-        client = HunterBLEClient.__new__(HunterBLEClient)
+        client = HunterBLEClient(None, "AA:BB:CC:DD:EE:FF")
         client._client = fake_client
         client._notification_callback = lambda uuid, payload: received.append(
             (uuid.lower(), bytes(payload))
@@ -87,7 +87,7 @@ class NotificationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         characteristic = FakeCharacteristic()
         fake_client = FakeBleakClient(characteristic)
         received = []
-        client = HunterBLEClient.__new__(HunterBLEClient)
+        client = HunterBLEClient(None, "AA:BB:CC:DD:EE:FF")
         client._client = fake_client
         client._notification_callback = lambda uuid, payload: received.append(
             (uuid.lower(), bytes(payload))

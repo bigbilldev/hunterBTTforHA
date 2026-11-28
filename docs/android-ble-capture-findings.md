@@ -232,3 +232,43 @@ when supported, resolves a fresh BLE device through Home Assistant, and retries
 once with service caching disabled. This is a diagnostic recovery path; it
 does not bypass the required FFA5 read or enable valve control if FFA5 remains
 missing.
+
+## November 27 HA / ESPHome proxy GATT declaration recovery
+
+The latest Home Assistant log does **not** show FFA5 being remapped to FFA0 or FFA1. It shows the FF80 service's Bleak representation grouping attributes at handles 0x005F–0x0065 under the FFA1 descriptor list.
+
+Source inspection narrows where this grouping occurs: bleak-esphome builds its Bleak service collection from the ESPHome API's GATT response, copying each API characteristic's descriptors into that characteristic's Bleak descriptor list. The API schema itself models descriptors as a repeated field of each characteristic. Therefore the malformed parent/child grouping is already present in the service data supplied by the ESPHome proxy (or in the firmware code that constructs that response); Bleak is faithfully representing the supplied grouping rather than independently discovering ATT declarations and deciding to re-parent them.
+
+
+
+| ATT handle | Attribute UUID | Interpretation |
+|---:|---|---|
+| 0x005F | 0x2803 | Characteristic declaration |
+| 0x0060 | FF9F | Characteristic value |
+| 0x0061 | 0x2803 | Characteristic declaration |
+| 0x0062 | FFA4 | Characteristic value |
+| 0x0063 | 0x2803 | Characteristic declaration |
+| 0x0064 | FFA5 | Characteristic value |
+| 0x0065 | 0x2902 | Client Characteristic Configuration Descriptor |
+
+The Android 6.1.49 HCI capture independently places FFA5 at declaration/value/CCCD handles 0x0063/0x0064/0x0065. The declaration attribute (UUID 0x2803) contains the authoritative properties byte, little-endian value handle, and 128-bit characteristic UUID.
+
+The integration now has a narrowly scoped diagnostic recovery path:
+1. Find a 0x2803 declaration immediately preceding the FFA5 value attribute in the malformed descriptor inventory.
+2. Read the declaration using Bleak's characteristic-read operation with a temporary object carrying the declaration handle (0x0063). The declaration is a GATT attribute, not a descriptor.
+3. Parse and validate the declaration UUID, value handle, and read property against the adjacent discovered attribute.
+4. Construct a Bleak characteristic object using those parsed values and the discovered FFA5 value/CCCD handles.
+5. Read FFA5 using that exact characteristic object. The existing manager still requires a live, non-zero six-byte value before generating or writing FF81.
+6. If the declaration cannot be read, does not validate, or the live FFA5 read fails or returns invalid bytes, initialization remains fail-closed. No FFA0/FFA1 substitution is attempted.
+
+Source inspection of the current bleak-esphome 4.1.0 backend shows that it supports this handle-based route:
+- Its service builder converts each descriptor reported by the ESPHome API into a Bleak descriptor attached to the reported parent characteristic.
+- read_gatt_char forwards the supplied characteristic object's handle to the ESPHome API characteristic-read operation, which is also the correct raw-handle route for reading the 0x2803 declaration.
+- read_gatt_char forwards the supplied characteristic object's handle to the ESPHome API characteristic-read operation.
+- start_notify forwards the characteristic handle; when REMOTE_CACHING is enabled it also requires a CCCD attached to that characteristic and writes the CCCD handle.
+
+Bleak's public client API accepts a Bleak characteristic object directly, bypassing its malformed collection lookup. The recovery path therefore creates an official Bleak characteristic with the declaration-derived UUID/properties/value handle and attaches the discovered CCCD. That is supported by the inspected backend contract; it avoids requiring a proxy firmware change merely to address FFA5. The remaining uncertainty is runtime: the deployed HA/bleak-esphome version and ESPHome proxy must successfully read declaration handle 0x0063 through the characteristic-read operation, then characteristic value handle 0x0064, and subscribe through CCCD 0x0065. If those handle operations fail in the actual session, the fix belongs in the deployed ESPHome/bleak-esphome stack rather than Hunter UUID mapping.
+
+References: https://bleak-esphome.readthedocs.io/en/latest/architecture.html and https://github.com/Bluetooth-Devices/bleak-esphome/blob/main/src/bleak_esphome/backend/client.py (service construction, read_gatt_char and start_notify).
+
+No valve-control packet is sent by the recovery probe. FF81 remains gated behind the successful six-byte FFA5 read and the existing initialization sequence.
