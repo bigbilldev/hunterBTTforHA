@@ -257,6 +257,14 @@ The integration now has a narrowly scoped diagnostic recovery path:
 5. Read FFA5 using that exact characteristic object. The existing manager still requires a live, non-zero six-byte value before generating or writing FF81.
 6. If the declaration cannot be read, does not validate, or the live FFA5 read fails or returns invalid bytes, initialization remains fail-closed. No FFA0/FFA1 substitution is attempted.
 
-Bleak's public client API accepts a characteristic object for GATT reads and notifications. Passing the reconstructed object avoids resolving its UUID/handle through the malformed service collection. This demonstrates a Bleak-level route for trying the read; it does not yet prove the ESPHome proxy backend can perform it successfully on hardware. A real proxy-backed FFA5 read is still required. If the backend rejects the reconstructed object or the declaration read, the correct fix belongs in the ESPHome proxy/Bleak backend service-discovery reconstruction rather than in Hunter UUID mapping.
+Source inspection of the current bleak-esphome 4.1.0 backend shows that it supports this handle-based route:
+- Its service builder converts each descriptor reported by the ESPHome API into a Bleak descriptor attached to the reported parent characteristic.
+- read_gatt_descriptor forwards the supplied descriptor handle to the ESPHome API descriptor-read operation.
+- read_gatt_char forwards the supplied characteristic object's handle to the ESPHome API characteristic-read operation.
+- start_notify forwards the characteristic handle; when REMOTE_CACHING is enabled it also requires a CCCD attached to that characteristic and writes the CCCD handle.
+
+Bleak's public client API accepts a Bleak characteristic object directly, bypassing its malformed collection lookup. The recovery path therefore creates an official Bleak characteristic with the declaration-derived UUID/properties/value handle and attaches the discovered CCCD. That is supported by the inspected backend contract; it avoids requiring a proxy firmware change merely to address FFA5. The remaining uncertainty is runtime: the deployed HA/bleak-esphome version and ESPHome proxy must successfully read declaration handle 0x0063, then characteristic value handle 0x0064, and subscribe through CCCD 0x0065. If those handle operations fail in the actual session, the fix belongs in the deployed ESPHome/bleak-esphome stack rather than Hunter UUID mapping.
+
+References: https://bleak-esphome.readthedocs.io/en/latest/architecture.html and https://github.com/Bluetooth-Devices/bleak-esphome/blob/main/src/bleak_esphome/backend/client.py (service construction, read_gatt_descriptor, read_gatt_char, and start_notify).
 
 No valve-control packet is sent by the recovery probe. FF81 remains gated behind the successful six-byte FFA5 read and the existing initialization sequence.
